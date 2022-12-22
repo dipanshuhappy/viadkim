@@ -1,0 +1,531 @@
+mod lookup;
+
+pub use lookup::LookupTxt;
+
+use crate::{
+    canon::{self, BodyCanonStatus, BodyCanonicalizer},
+    crypto::{
+        self, CountingHasher, HashAlgorithm, HashStatus, InsufficientInput, KeyType,
+        VerificationError,
+    },
+    header::HeaderFields,
+    parse::strip_fws,
+    record::{self, DkimKeyRecord, ServiceType},
+    signature::{
+        self, CanonicalizationAlgorithm, DkimSignature, DkimSignatureError, DkimSignatureParseError,
+    },
+    tag_list::TagList,
+};
+use bstr::BStr;
+use std::{io, str, time::Duration};
+use tokio::{task::JoinHandle, time};
+use tracing::trace;
+
+// verifier config
+pub struct Config {
+    pub lookup_timeout: Duration,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            lookup_timeout: Duration::from_secs(10),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct VerificationResult {
+    pub index: usize,  // index in HeaderFields
+    pub signature: Option<DkimSignature>,
+    pub status: VerificationStatus,
+    // TODO testing: bool,  // if testing=true, treat the result as not decisive
+}
+
+// TODO RFC 6376 vs RFC 8601:
+// Success Permfail Tempfail
+#[derive(Debug, PartialEq)]
+pub enum VerificationStatus {
+    Success,
+    Failure(VerifierError),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum VerifierError {
+    DkimSignatureHeaderFormat(DkimSignatureError),
+    KeyRecordSyntax,
+    DisallowedHashAlgorithm,
+    DisallowedServiceType,
+    VerificationFailure(VerificationError),
+    BodyHashMismatch,
+    InsufficientBodyLength,
+    KeyLookup,  // TODO = Tempfail
+}
+
+struct SigTask {
+    index: usize,
+    sig: Option<DkimSignature>,
+    body_hasher: Option<CountingHasher>,
+    status: VerificationStatus,
+}
+
+struct VerifyingTask {
+    index: usize,
+
+    sig: Option<DkimSignature>,
+    name: Option<String>,
+    value: Option<String>,
+
+    lookup_task: Option<JoinHandle<io::Result<Vec<String>>>>,
+
+    data_hash: Option<Vec<u8>>,
+
+    status: Option<VerificationStatus>,
+}
+
+impl VerifyingTask {
+    fn new_not_started(index: usize, error: DkimSignatureError) -> Self {
+        let status = VerificationStatus::Failure(VerifierError::DkimSignatureHeaderFormat(error));
+        Self {
+            index,
+            sig: None,
+            name: None,
+            value: None,
+            lookup_task: None,
+            data_hash: None,
+            status: Some(status),
+        }
+    }
+
+    fn new(index: usize, sig: DkimSignature, name: String, value: String) -> Self {
+        Self {
+            index,
+            sig: Some(sig),
+            name: Some(name),
+            value: Some(value),
+            lookup_task: None,
+            data_hash: None,
+            status: None,
+        }
+    }
+}
+
+// TODO make inherent methods
+
+fn compute_data_hash(task: &mut VerifyingTask, headers: &HeaderFields) {
+    if let Some(sig) = &mut task.sig {
+        let headers = canon::canon_headers(
+            sig.canonicalization.header,
+            headers,
+            sig.signed_headers.as_slice(),
+        );
+
+        trace!("canonicalized headers: {:?}", BStr::new(&headers));
+
+        let original_canon_header = make_original_canon_header(
+            task.name.as_ref().unwrap(), task.value.as_ref().unwrap(), sig.canonicalization.header);
+
+        let data_hash = crypto::data_hash_digest(
+            sig.algorithm.to_hash_algorithm(),
+            &headers,
+            &original_canon_header,
+        );
+
+        task.data_hash = Some(data_hash);
+    }
+}
+
+fn spawn_lookup_task<T>(
+    task: &mut VerifyingTask,
+    resolver: &T,
+    config: &Config,
+)
+where
+    T: LookupTxt + Clone + 'static,
+{
+    if let Some(sig) = &mut task.sig {
+        // this is why resolver is Clone: need to pass it to tokio::spawn
+        let resolver = resolver.clone();
+        let domain = sig.domain.clone();
+        let selector = sig.selector.clone();
+
+        let lookup_timeout = config.lookup_timeout;
+
+        let lookup_task = tokio::spawn(async move {
+            time::timeout(
+                lookup_timeout,
+                record::look_up_records(&resolver, domain.as_ref(), &selector),
+            )
+            .await?
+        });
+
+        task.lookup_task = Some(lookup_task);
+    }
+}
+
+async fn verify_sig(task: &mut VerifyingTask) {
+    if let Some(sig) = &mut task.sig {
+        trace!("processing DKIM-Signature");
+
+        let hash_alg = sig.algorithm.to_hash_algorithm();
+        let key_type = sig.algorithm.to_key_type();
+        let signature_data = &sig.signature_data;
+
+        let data_hash = task.data_hash.as_ref().unwrap();
+
+        let txts = match task.lookup_task.take().unwrap().await.unwrap() {
+            Ok(txts) => {
+                if txts.is_empty() {
+                    trace!("no key record");
+                    task.status = Some(VerificationStatus::Failure(VerifierError::KeyLookup));
+                    return;
+                }
+                txts
+            }
+            Err(e) => {
+                trace!("could not look up key record: {e}");
+                task.status = Some(VerificationStatus::Failure(VerifierError::KeyLookup));
+                return;
+            }
+        };
+
+        // step through all (usually only 1, but many allowed) key records
+        assert!(!txts.is_empty());
+        for (i, key_record) in txts.into_iter().enumerate() {
+            trace!("trying verification using DKIM key record {}", i + 1);
+
+            match verify_signature_with_record(
+                key_type,
+                hash_alg,
+                data_hash,
+                signature_data,
+                &key_record,
+            ) {
+                Ok(()) => {
+                    trace!("successfully verified");
+                    task.status = Some(VerificationStatus::Success);
+                    break;
+                }
+                Err(e) => {
+                    trace!("verification failed");
+                    // record last error seen
+                    task.status = Some(VerificationStatus::Failure(e));
+                }
+            }
+        }
+    }
+}
+
+fn verify_signature_with_record(
+    key_type: KeyType,
+    hash_alg: HashAlgorithm,
+    data_hash: &[u8],
+    signature_data: &[u8],
+    key_record: &str,
+) -> Result<(), VerifierError> {
+    let tag_list = match TagList::from_str(key_record) {
+        Ok(r) => r,
+        Err(_e) => {
+            return Err(VerifierError::KeyRecordSyntax);
+        }
+    };
+
+    let rec = match DkimKeyRecord::from_tag_list(&tag_list) {
+        Ok(r) => r,
+        Err(_e) => {
+            return Err(VerifierError::KeyRecordSyntax);
+        }
+    };
+
+    if !rec.hash_algorithms.contains(&hash_alg) {
+        return Err(VerifierError::DisallowedHashAlgorithm);
+    }
+    if !(rec.service_types.contains(&ServiceType::Any)
+        || rec.service_types.contains(&ServiceType::Email))
+    {
+        return Err(VerifierError::DisallowedServiceType);
+    }
+    // ...
+
+    match key_type {
+        KeyType::Rsa => {
+            match crypto::verify_signature_rsa(hash_alg, &rec.key_data, data_hash, signature_data) {
+                Ok(()) => {
+                    trace!("RSA public key verification successful");
+                    Ok(())
+                }
+                Err(e) => {
+                    trace!("RSA public key verification failed: {e}");
+                    Err(VerifierError::VerificationFailure(e))
+                }
+            }
+        }
+        KeyType::Ed25519 => {
+            match crypto::verify_signature_ed25519(&rec.key_data, data_hash, signature_data) {
+                Ok(()) => {
+                    trace!("Ed25519 public key verification successful");
+                    Ok(())
+                }
+                Err(e) => {
+                    trace!("Ed25519 public key verification failed: {e}");
+                    Err(VerifierError::VerificationFailure(e))
+                }
+            }
+        }
+    }
+}
+
+/// A verifier validating all DKIM signatures in a message.
+///
+/// The verifier proceeds in three stages...
+pub struct Verifier {
+    tasks: Vec<SigTask>,
+    body_canonicalizer_simple: BodyCanonicalizer,
+    body_canonicalizer_relaxed: BodyCanonicalizer,
+}
+
+impl Verifier {
+    pub async fn process_headers<T>(resolver: &T, headers: &HeaderFields, config: &Config) -> Self
+    where
+        T: LookupTxt + Clone + 'static,
+    {
+        let mut tasks = find_dkim_signatures(headers);
+
+        // do lookups in background
+        for task in &mut tasks {
+            spawn_lookup_task(task, resolver, config);
+        }
+
+        // compute data hashes for all sigs
+        for task in &mut tasks {
+            compute_data_hash(task, headers);
+        }
+
+        // verify signatures using lookups and data hashes
+        // TODO order verification by first verifying sigs with d= equal or subdomain of From: header?
+        for task in &mut tasks {
+            verify_sig(task).await;
+        }
+
+        let mut final_tasks = vec![];
+        for task in tasks {
+            let body_hasher = match &task.sig {
+                Some(sig) => {
+                    let body_len = sig.body_length;
+                    let hash_alg = sig.algorithm.to_hash_algorithm();
+                    Some(CountingHasher::new(hash_alg, body_len))
+
+                }
+                None => None,
+            };
+            final_tasks.push(SigTask {
+                index: task.index,
+                sig: task.sig,
+                body_hasher,
+                status: task.status.unwrap(),
+            });
+        }
+
+        Self {
+            tasks: final_tasks,
+            body_canonicalizer_simple: BodyCanonicalizer::simple(),
+            body_canonicalizer_relaxed: BodyCanonicalizer::relaxed(),
+        }
+    }
+
+    pub fn body_chunk(&mut self, chunk: &[u8]) -> BodyCanonStatus {
+        let mut cached_canonicalized_chunk_simple = None;
+        let mut cached_canonicalized_chunk_relaxed = None;
+
+        let mut all_done = true;
+
+        for task in &mut self.tasks {
+            if task.status != VerificationStatus::Success {
+                continue;
+            }
+
+            if !task.body_hasher.as_ref().unwrap().is_done() {
+                let canon_kind = task.sig.as_ref().unwrap().canonicalization.body;
+
+                let canonicalized_chunk = match canon_kind {
+                    CanonicalizationAlgorithm::Simple => cached_canonicalized_chunk_simple
+                        .get_or_insert_with(|| self.body_canonicalizer_simple.canon_chunk(chunk)),
+                    CanonicalizationAlgorithm::Relaxed => cached_canonicalized_chunk_relaxed
+                        .get_or_insert_with(|| self.body_canonicalizer_relaxed.canon_chunk(chunk)),
+                };
+
+                if let HashStatus::NotDone = task.body_hasher.as_mut().unwrap().update(canonicalized_chunk) {
+                    all_done = false;
+                }
+            }
+        }
+
+        if all_done {
+            BodyCanonStatus::Done
+        } else {
+            BodyCanonStatus::NotDone
+        }
+    }
+
+    pub fn finish(self) -> Vec<VerificationResult> {
+        let mut result = vec![];
+
+        let cached_canonicalized_chunk_simple = self.body_canonicalizer_simple.finish_canon();
+        let cached_canonicalized_chunk_relaxed = self.body_canonicalizer_relaxed.finish_canon();
+
+        for task in self.tasks {
+            match task.status {
+                VerificationStatus::Failure(e) => {
+                    result.push(VerificationResult {
+                        index: task.index,
+                        signature: task.sig,
+                        status: VerificationStatus::Failure(e),
+                    });
+                }
+                VerificationStatus::Success => {
+                    trace!("now checking body hash for signature");
+
+                    let canon_kind = task.sig.as_ref().unwrap().canonicalization.body;
+                    let canonicalized_chunk = match canon_kind {
+                        CanonicalizationAlgorithm::Simple => &cached_canonicalized_chunk_simple[..],
+                        CanonicalizationAlgorithm::Relaxed => &cached_canonicalized_chunk_relaxed[..],
+                    };
+
+                    let mut hasher = task.body_hasher.unwrap();
+
+                    hasher.update(canonicalized_chunk);
+
+                    let status = match hasher.finish() {
+                        Ok((h, _)) => {
+                            if h != task.sig.as_ref().unwrap().body_hash {
+                                // downgrade status Success -> Failure!
+                                trace!("body hash mismatch");
+                                    VerificationStatus::Failure(VerifierError::BodyHashMismatch)
+                            } else {
+                                trace!("body hash matched");
+                                VerificationStatus::Success
+                            }
+                        }
+                        Err(InsufficientInput) => {
+                            // downgrade status Success -> Failure!
+                            VerificationStatus::Failure(VerifierError::InsufficientBodyLength)
+                        }
+                    };
+
+                    result.push(VerificationResult {
+                        index: task.index,
+                        signature: Some(task.sig.unwrap()),
+                        status,
+                    });
+                }
+            }
+        }
+
+        result
+    }
+}
+
+
+fn find_dkim_signatures(headers: &HeaderFields) -> Vec<VerifyingTask> {
+    let mut tasks = vec![];
+
+    let dkim_headers = headers
+        .as_ref()
+        .iter()
+        .enumerate()
+        .filter(|(_, (name, _))| name.as_ref().eq_ignore_ascii_case("DKIM-Signature"))
+        .take(20);  // hard limit
+
+    for (idx, (name, value)) in dkim_headers {
+        trace!(
+            "found DKIM-Signature header at index {}: {:?}",
+            idx,
+            BStr::new(value.as_ref())
+        );
+
+        // at this point, the DKIM sig "counts", and a result must be recorded
+
+        // well-formed DKIM-Signature contain only UTF-8
+        let value = match str::from_utf8(value.as_ref()) {
+            Ok(r) => r,
+            Err(_) => {
+                tasks.push(VerifyingTask::new_not_started(
+                    idx,
+                    DkimSignatureError {
+                        domain: None,
+                        signature_data_base64: None,
+                        cause: DkimSignatureParseError::InvalidTagList,
+                    },
+                ));
+                continue;
+            }
+        };
+
+        let t = match signature::parse_dkim_signature(value) {
+            Ok(sig) => VerifyingTask::new(idx, sig, name.as_ref().into(), value.into()),
+            Err(e) => VerifyingTask::new_not_started(idx, e),
+        };
+
+        tasks.push(t);
+    }
+
+    tasks
+}
+
+fn make_original_canon_header(name: &str, value: &str, canon: CanonicalizationAlgorithm) -> String {
+    let mut value = value.to_owned();
+    let mut last_i = 0;
+    let mut ms = value.match_indices(';');
+
+    // TODO clean up this abomination
+    loop {
+        match ms.next() {
+            Some((i, _)) => {
+                let tag = &value[last_i..i];
+                let without_fws = strip_fws(tag).unwrap_or(tag);
+                if without_fws.starts_with("b=") {
+                    value.drain((last_i + (tag.len() - without_fws.len() + 2 ))..i);
+                    break;
+                } else {
+                    last_i = i + 1;
+                }
+            }
+            None => {
+                let i = value.len();
+                if last_i != i {
+                    // last slice
+                    let tag = &value[last_i..i];
+                    let without_fws = strip_fws(tag).unwrap_or(tag);
+                    if without_fws.starts_with("b=") {
+                        value.drain((last_i + (tag.len() - without_fws.len() + 2 ))..i);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    signature::canon_dkim_header(canon, name, &value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn make_original_canon_header_ok() {
+        let example = "v=1; a=rsa-sha256; d=example.net; s=brisbane;
+  c=simple; q=dns/txt; i=@eng.example.net;
+  h=from:to:subject:date;
+  bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=;
+  b=dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZVoG4ZHRNiYzR";
+        let example = example.replace("\n", "\r\n");
+
+        let s = make_original_canon_header("Dkim-Signature", &example, CanonicalizationAlgorithm::Relaxed);
+
+        assert_eq!(s,
+            "dkim-signature:v=1; a=rsa-sha256; d=example.net; \
+            s=brisbane; c=simple; q=dns/txt; i=@eng.example.net; h=from:to:subject:date; \
+            bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=; b=");
+    }
+}
