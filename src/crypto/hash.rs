@@ -145,12 +145,12 @@ mod tests {
         let mut hasher = CountingHasher::new(HashAlgorithm::Sha256, None);
 
         let body = b"\
-Hallo Dambert,
+Hello Proff,
 
-Versuchen wir noch einlam einen Tenst zu schicken,
-und schauen ob dass so will.
+Let\xe2\x80\x99s try this again, with line
+breaks and empty lines even.
 
-Lg, und bis bald
+Ciao, und bis bald
 
 
 -- 
@@ -168,8 +168,8 @@ David
         let (hash, _) = hasher.finish().unwrap();
 
         assert_eq!(
-            base64::encode(&hash),
-            "5KNWxtGs3IAYECd0MXCocl5PqO4Y0QNgQmy7QTCXs6Q="
+            base64::encode(hash),
+            "RMSbeRTj/zCxWeWQXpEIbiqxH0Jqg5eYs4ORzOt3MT0="
         );
     }
 

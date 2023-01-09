@@ -10,6 +10,7 @@ use crate::{
     header::{FieldName, HeaderFields},
     signature::{
         self, Canonicalization, CanonicalizationAlgorithm, DkimSignature, DomainName, Ident,
+        Selector, LINE_WIDTH,
     },
 };
 use std::time::{Duration, SystemTime};
@@ -27,7 +28,7 @@ pub enum BodyLength {
 pub enum Timestamp {
     #[default]
     Now,  // t=<now>
-    Exact(u64),  // l=<n>
+    Exact(u64),  // t=<n>
 }
 
 pub struct SigningRequest {
@@ -35,10 +36,10 @@ pub struct SigningRequest {
     pub key_type: KeyType,
     pub hash_alg: HashAlgorithm,
     pub canonicalization: Canonicalization,
-    pub signed_headers: Vec<FieldName>,
+    pub signed_headers: Vec<FieldName>,  // + oversigned headers; handle multiply occurring names
     pub domain: DomainName,
     pub user_id: Ident,
-    pub selector: String,
+    pub selector: Selector,
     pub body_length: BodyLength,
     pub copied_headers: Option<Vec<FieldName>>,  // which fields to copy
     pub timestamp: Option<Timestamp>,
@@ -49,6 +50,7 @@ pub struct SigningRequest {
     pub signing_key_id: KeyId,
 
     // Additional config
+    pub line_width: usize,
     //   - order of tags: d=, s=, a=, bh=, b=, t=, x= ...
     //   - header line length ...
 }
@@ -56,7 +58,7 @@ pub struct SigningRequest {
 impl SigningRequest {
     pub fn new(
         domain: DomainName,
-        selector: String,
+        selector: Selector,
         key_type: KeyType,
         signing_key_id: KeyId,
     ) -> Self {
@@ -77,6 +79,8 @@ impl SigningRequest {
             header_name: "DKIM-Signature".into(),
 
             signing_key_id,
+
+            line_width: LINE_WIDTH,
         }
     }
 }
@@ -122,13 +126,15 @@ pub struct Signer {
     body_canonicalizer_relaxed: BodyCanonicalizer,
 }
 
+// The Signer design is unpleasant to use, rethink
+
 impl Signer {
     pub fn prepare_signing(
         requests: Vec<SigningRequest>,  // non-empty
         headers: HeaderFields,
         // + global config, such as timeouts
     ) -> Result<Self, SignerError> {
-        assert!(!requests.is_empty());
+        assert!(matches!(requests.len(), 1..=10));
 
         if !headers
             .as_ref()
@@ -146,7 +152,7 @@ impl Signer {
             let hash_alg = request.hash_alg;
             let body_length = match request.body_length {
                 BodyLength::All | BodyLength::OnlyMessageLength => None,
-                BodyLength::Exact(n) => Some(n.try_into().unwrap()),
+                BodyLength::Exact(n) => Some(n.try_into().unwrap_or(usize::MAX)),
             };
 
             let task = SigningTask {
@@ -229,15 +235,15 @@ impl Signer {
                 }
             };
 
-            let body_hash = h;
+            let body_hash = h.into();
             let body_length = match task.request.body_length {
                 BodyLength::All => None,
-                BodyLength::OnlyMessageLength => Some(final_len),
-                BodyLength::Exact(n) => Some(n.try_into().unwrap()),
+                BodyLength::OnlyMessageLength | BodyLength::Exact(_) => Some(final_len.try_into().unwrap_or(u64::MAX)),
             };
 
+            // TODO
             let signed_headers =
-                signature::select_signed_headers(&task.request.signed_headers, &self.headers);
+                signature::select_signed_headers(&task.request.signed_headers, &[], &self.headers);
 
             let header_canonicalization = task.request.canonicalization.header;
 
@@ -274,7 +280,7 @@ impl Signer {
             // prepare complete formatted dkim-sig header with body hash *except* with contents of b= tag
             let mut sig = DkimSignature {
                 algorithm,
-                signature_data: vec![],  // placeholder, to be replaced
+                signature_data: Default::default(),  // placeholder, to be replaced
                 body_hash,
                 canonicalization: task.request.canonicalization,
                 domain: task.request.domain.clone(),
@@ -287,8 +293,9 @@ impl Signer {
                 copied_headers: None,
             };
 
+            let line_width = task.request.line_width;
             let hdr_name = &task.request.header_name;
-            let mut formatted_header = sig.format_without_signature();
+            let mut formatted_header = sig.format_without_signature(line_width);
             let canon_header =
                 signature::canon_dkim_header(header_canonicalization, hdr_name, &formatted_header);
 
@@ -301,7 +308,7 @@ impl Signer {
                 match sign_hash(key_id, key_type, hash_alg, &data_hash, key_store).await {
                     Ok(signature_data) => {
                         trace!("successfully signed");
-                        signature_data
+                        signature_data.into_boxed_slice()
                     }
                     Err(_e) => {
                         trace!("signing failed");
@@ -318,7 +325,7 @@ impl Signer {
 
             // insert signature into formatted dkim-sig header, store
             sig.signature_data = signature_data.clone();
-            signature::push_signature_data(&mut formatted_header, &signature_data[..]);
+            signature::push_signature_data(&mut formatted_header, &signature_data[..], line_width);
 
             result.push(SigningResult {
                 status: SigningStatus::Success {

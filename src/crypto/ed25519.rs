@@ -1,15 +1,11 @@
 use crate::crypto::{SigningError, VerificationError};
-use ed25519::pkcs8::{DecodePrivateKey as _, DecodePublicKey as _, KeypairBytes, PublicKeyBytes};
+use ed25519::pkcs8::{DecodePublicKey as _, KeypairBytes, PublicKeyBytes};
 use ed25519_dalek::{
     Keypair as Ed25519Keypair, PublicKey as Ed25519PublicKey, SecretKey,
     Signature as Ed25519Signature, Signer as _, Verifier as _,
 };
-use std::{
-    fs,
-    io::{self, ErrorKind},
-    path::Path,
-};
 
+/*
 pub fn read_ed25519_private_key_file(path: impl AsRef<Path>) -> io::Result<Ed25519Keypair> {
     let s = fs::read_to_string(path)?;
 
@@ -20,12 +16,17 @@ pub fn read_ed25519_private_key(s: &str) -> io::Result<Ed25519Keypair> {
     let keypair =
         KeypairBytes::from_pkcs8_pem(s).map_err(|_| io::Error::from(ErrorKind::Other))?;
 
-    let secret = SecretKey::from_bytes(&keypair.secret_key[..]).unwrap();
-    let public = Ed25519PublicKey::from(&secret);
-
-    let keypair = Ed25519Keypair { secret, public };
+    let keypair = keypair_bytes_to_keypair(keypair);
 
     Ok(keypair)
+}
+*/
+
+pub fn keypair_bytes_to_keypair(kpb: KeypairBytes) -> Ed25519Keypair {
+    let secret = SecretKey::from_bytes(&kpb.secret_key[..]).unwrap();
+    let public = Ed25519PublicKey::from(&secret);
+
+    Ed25519Keypair { secret, public }
 }
 
 pub fn verify_signature_ed25519(
@@ -58,10 +59,9 @@ pub fn sign_ed25519(keypair: &Ed25519Keypair, msg: &[u8]) -> Result<Vec<u8>, Sig
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519::pkcs8::EncodePrivateKey as _;
+    use ed25519::pkcs8::{DecodePrivateKey as _, EncodePrivateKey as _};
 
     /*
-    #[ignore]
     #[test]
     fn make_ed25519_key() {
         use rand::rngs::OsRng;
@@ -89,7 +89,6 @@ mod tests {
     }
     */
 
-    #[ignore]
     #[test]
     fn read_ed25519_key() {
         // TODO These two pkcs8 encoded keys generated with disabled test above:

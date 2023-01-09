@@ -6,16 +6,16 @@ use crate::{
     dqp,
     header::{FieldName, HeaderFields},
     tag_list::{
-        self,
-        parse_base64_tag_value, parse_colon_separated_tag_value, parse_dqp_header_field, TagList,
-        TagSpec,
+        self, parse_base64_tag_value, parse_colon_separated_tag_value, parse_dqp_header_field,
+        TagList, TagSpec,
     },
+    util::ToStr,
 };
 use std::{
+    error::Error,
     fmt::{self, Display, Formatter, Write},
-    str,
+    str::{self, FromStr},
 };
-use tracing::trace;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SignatureAlgorithm {
@@ -47,11 +47,29 @@ impl From<(KeyType, HashAlgorithm)> for SignatureAlgorithm {
     }
 }
 
+impl ToStr for SignatureAlgorithm {
+    fn to_str(&self) -> &'static str {
+        match self {
+            Self::RsaSha256 => "rsa-sha256",
+            Self::Ed25519Sha256 => "ed25519-sha256",
+        }
+    }
+}
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub enum CanonicalizationAlgorithm {
     #[default]
     Simple,
     Relaxed,
+}
+
+impl ToStr for CanonicalizationAlgorithm {
+    fn to_str(&self) -> &'static str {
+        match self {
+            Self::Simple => "simple",
+            Self::Relaxed => "relaxed",
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -64,6 +82,14 @@ pub struct Canonicalization {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseDomainError;
+
+impl Display for ParseDomainError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "could not parse domain name")
+    }
+}
+
+impl Error for ParseDomainError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ident {
@@ -229,11 +255,6 @@ impl AsRef<str> for DomainName {
 }
 
 fn is_valid_dns_name(mut s: &str) -> bool {
-    const MAX_DOMAIN_LENGTH: usize = 253;
-
-    fn has_valid_domain_len(s: &str) -> bool {
-        matches!(s.len(), 1..=MAX_DOMAIN_LENGTH)
-    }
     fn is_tld(s: &str) -> bool {
         is_label(s) && !s.chars().all(|c: char| c.is_ascii_digit())
     }
@@ -259,14 +280,60 @@ fn is_valid_dns_name(mut s: &str) -> bool {
 }
 
 fn is_label(s: &str) -> bool {
-    fn has_valid_label_len(s: &str) -> bool {
-        matches!(s.len(), 1..=63)
-    }
-
     has_valid_label_len(s)
         && s.starts_with(|c: char| c.is_ascii_alphanumeric())
         && s.ends_with(|c: char| c.is_ascii_alphanumeric())
         && s.chars().all(|c: char| c.is_ascii_alphanumeric() || c == '-')
+}
+
+const MAX_DOMAIN_LENGTH: usize = 253;
+
+fn has_valid_domain_len(s: &str) -> bool {
+    matches!(s.len(), 1..=MAX_DOMAIN_LENGTH)
+}
+
+fn has_valid_label_len(s: &str) -> bool {
+    matches!(s.len(), 1..=63)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Selector(String);
+
+impl Selector {
+    pub fn new(s: &str) -> Result<Self, &'static str> {  // TODO
+        parse_selector(s).ok_or("TODO")
+    }
+}
+
+fn parse_selector(s: &str) -> Option<Selector> {
+    // TODO this check not necessary, will fail later:
+    if !has_valid_domain_len(s) {
+        return None;
+    }
+
+    // lenient parsing domain name labels, allows things like "dkim_123"
+    if !s.split('.').all(|l| {
+        has_valid_label_len(l)
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.chars().all(tag_list::is_tval_char)
+    }) {
+        return None;
+    }
+
+    Some(Selector(s.into()))
+}
+
+impl Display for Selector {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl AsRef<str> for Selector {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -311,54 +378,62 @@ pub enum DkimSignatureParseError {       // Auth-Res:
     InvalidTagList,
 }
 
-// TODO make inherent method
-pub fn parse_dkim_signature(s: &str) -> Result<DkimSignature, DkimSignatureError> {
-    let tag_list = match TagList::from_str(s) {
-        Ok(r) => r,
-        Err(_e) => {
-            return Err(DkimSignatureError {
-                domain: None,
-                signature_data_base64: None,
-                cause: DkimSignatureParseError::InvalidTagList,
-            });
-        }
-    };
+impl FromStr for DkimSignature {
+    type Err = DkimSignatureError;
 
-    match DkimSignature::from_tag_list(&tag_list) {
-        Ok(sig) => Ok(sig),
-        Err(e) => {
-            // attempt to find _some_ info for diagnostics
-            let domain = tag_list.as_ref().iter().find(|spec| spec.name == "d")
-                .and_then(|spec| DomainName::new(spec.value).ok());
-            let signature_data_base64 = tag_list.as_ref().iter().find(|spec| spec.name == "b")
-                .map(|spec| tag_list::trim_base64_tag_value(spec.value));
-            Err(DkimSignatureError {
-                domain,
-                signature_data_base64,
-                cause: e,
-            })
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let tag_list = match TagList::from_str(s) {
+            Ok(r) => r,
+            Err(_e) => {
+                return Err(DkimSignatureError {
+                    domain: None,
+                    signature_data_base64: None,
+                    cause: DkimSignatureParseError::InvalidTagList,
+                });
+            }
+        };
+
+        match DkimSignature::from_tag_list(&tag_list) {
+            Ok(sig) => Ok(sig),
+            Err(e) => {
+                // attempt to find _some_ info for diagnostics
+                let domain = tag_list.as_ref().iter().find(|spec| spec.name == "d")
+                    .and_then(|spec| DomainName::new(spec.value).ok());
+                let signature_data_base64 = tag_list.as_ref().iter().find(|spec| spec.name == "b")
+                    .map(|spec| tag_list::trim_base64_tag_value(spec.value));
+                Err(DkimSignatureError {
+                    domain,
+                    signature_data_base64,
+                    cause: e,
+                })
+            }
         }
     }
 }
 
+/// A DKIM signature as encoded in a `DKIM-Signature` header field.
 #[derive(PartialEq, Eq)]
 pub struct DkimSignature {
+    // The fields are strongly typed and have public visibility. This does allow
+    // constructing an ‘invalid’ `DkimSignature` (eg with empty signature) but
+    // given usage contexts this is acceptable.
+
     pub algorithm: SignatureAlgorithm,
-    pub signature_data: Vec<u8>,
-    pub body_hash: Vec<u8>,
+    pub signature_data: Box<[u8]>,
+    pub body_hash: Box<[u8]>,
     pub canonicalization: Canonicalization,
     pub domain: DomainName,
-    pub signed_headers: Vec<FieldName>,  // not empty, must contain "From"
-    pub user_id: Ident,  // 'ident'
-    pub body_length: Option<usize>,  // from u64
-    pub selector: String,  // TODO should be dname labels
+    pub signed_headers: Vec<FieldName>,
+    pub user_id: Ident,
+    pub body_length: Option<u64>,
+    pub selector: Selector,
     pub copied_headers: Option<Vec<(FieldName, Vec<u8>)>>,
     pub timestamp: Option<u64>,
     pub expiration: Option<u64>,
 }
 
 impl DkimSignature {
-    pub fn from_tag_list(tag_list: &TagList<'_>) -> Result<Self, DkimSignatureParseError> {
+    fn from_tag_list(tag_list: &TagList<'_>) -> Result<Self, DkimSignatureParseError> {
         let mut version_seen = false;
         let mut algorithm = None;
         let mut signature_data = None;
@@ -403,12 +478,12 @@ impl DkimSignature {
                 "b" => {
                     let value = parse_base64_tag_value(value)
                         .map_err(|_| DkimSignatureParseError::ValueSyntax)?;
-                    signature_data = Some(value);
+                    signature_data = Some(value.into());
                 }
                 "bh" => {
                     let value = parse_base64_tag_value(value)
                         .map_err(|_| DkimSignatureParseError::ValueSyntax)?;
-                    body_hash = Some(value);
+                    body_hash = Some(value.into());
                 }
                 "c" => {
                     let parse_canon = |s: &str| {
@@ -461,9 +536,6 @@ impl DkimSignature {
                     let value: u64 = value
                         .parse()
                         .map_err(|_| DkimSignatureParseError::InvalidBodyLength)?;
-                    // u64-typed body length, but must be representable in usize for our convenience
-                    let value = usize::try_from(value)
-                        .map_err(|_| DkimSignatureParseError::InvalidBodyLength)?;
                     body_length = Some(value);
                 }
                 "q" => {
@@ -478,12 +550,8 @@ impl DkimSignature {
                     }
                 }
                 "s" => {
-                    // TODO
-                    // selector =   sub-domain *( "." sub-domain )
-                    if value.is_empty() || !value.split('.').all(is_label) {
-                        return Err(DkimSignatureParseError::InvalidSelector);
-                    }
-                    selector = Some(value.into());
+                    let value = parse_selector(value).ok_or(DkimSignatureParseError::InvalidSelector)?;
+                    selector = Some(value);
                 }
                 "t" => {
                     let value = value
@@ -549,23 +617,19 @@ impl DkimSignature {
         })
     }
 
-    pub fn format_without_signature(&self) -> String {
+    pub(crate) fn format_without_signature(&self, width: usize) -> String {
         let start_i = "DKIM-Signature:".len();
 
         let mut result = String::new();
         let mut i = start_i;
 
-        format_tag_into_string(&mut result, WIDTH, &mut i, "v", "1");
+        format_tag_into_string(&mut result, width, &mut i, "v", "1");
 
-        format_tag_into_string(&mut result, WIDTH, &mut i, "d", self.domain.as_ref());
+        format_tag_into_string(&mut result, width, &mut i, "d", self.domain.as_ref());
 
-        format_tag_into_string(&mut result, WIDTH, &mut i, "s", &self.selector);
+        format_tag_into_string(&mut result, width, &mut i, "s", self.selector.as_ref());
 
-        let alg = match self.algorithm {
-            SignatureAlgorithm::RsaSha256 => "rsa-sha256",
-            SignatureAlgorithm::Ed25519Sha256 => "ed25519-sha256",
-        };
-        format_tag_into_string(&mut result, WIDTH, &mut i, "a", alg);
+        format_tag_into_string(&mut result, width, &mut i, "a", self.algorithm.to_str());
 
         let canon = match (self.canonicalization.header, self.canonicalization.body) {
             (CanonicalizationAlgorithm::Simple, CanonicalizationAlgorithm::Simple) => None,
@@ -580,17 +644,17 @@ impl DkimSignature {
             }
         };
         if let Some(canon) = canon {
-            format_tag_into_string(&mut result, WIDTH, &mut i, "c", canon);
+            format_tag_into_string(&mut result, width, &mut i, "c", canon);
         }
 
         if let Some(timestamp) = &self.timestamp {
-            format_tag_into_string(&mut result, WIDTH, &mut i, "t", &timestamp.to_string());
+            format_tag_into_string(&mut result, width, &mut i, "t", &timestamp.to_string());
         }
         if let Some(expiration) = &self.expiration {
-            format_tag_into_string(&mut result, WIDTH, &mut i, "x", &expiration.to_string());
+            format_tag_into_string(&mut result, width, &mut i, "x", &expiration.to_string());
         }
 
-        format_colon_separated_into_string(&mut result, WIDTH, &mut i, "h", &self.signed_headers);
+        format_colon_separated_into_string(&mut result, width, &mut i, "h", &self.signed_headers);
 
         if let Some(z) = &self.copied_headers {
             // TODO i
@@ -603,10 +667,10 @@ impl DkimSignature {
             result.push(';');
         }
 
-        let bh = base64::encode(&self.body_hash);
-        format_base64_into_string(&mut result, WIDTH, &mut i, "bh", &bh);
+        let bh = encode_binary(&self.body_hash);
+        format_base64_into_string(&mut result, width, &mut i, "bh", &bh);
 
-        if i + 4 <= WIDTH {  // at least one additional char behind =
+        if i + 4 <= width {  // at least one additional char behind =
             result.push_str(" b=");
         } else {
             result.push_str("\r\n\tb=");
@@ -614,6 +678,10 @@ impl DkimSignature {
 
         result
     }
+}
+
+pub fn encode_binary<T: AsRef<[u8]>>(input: T) -> String {
+    base64::encode(input)
 }
 
 // TODO
@@ -636,7 +704,7 @@ impl fmt::Debug for DkimSignature {
     }
 }
 
-const WIDTH: usize = 78;
+pub const LINE_WIDTH: usize = 78;
 
 fn format_tag_into_string(
     result: &mut String,
@@ -735,17 +803,18 @@ fn format_base64_into_string(
     *i += 1;
 }
 
-pub fn push_signature_data(
+pub(crate) fn push_signature_data(
     formatted_header: &mut String,
     signature_data: &[u8],
+    line_width: usize,
 ) {
-    let s = base64::encode(signature_data);
+    let s = encode_binary(signature_data);
     // note s contains only ASCII now
 
     let last_line = formatted_header.rsplit("\r\n").next().unwrap_or(&formatted_header[..]);
     let len = last_line.chars().count();
 
-    let first_chunk_len = WIDTH.saturating_sub(len).max(1);  //min len 1
+    let first_chunk_len = line_width.saturating_sub(len).max(1);  //min len 1
 
     let first_chunk = &s[..first_chunk_len];
 
@@ -758,7 +827,7 @@ pub fn push_signature_data(
     }
 }
 
-pub fn canon_dkim_header(
+pub(crate) fn canon_dkim_header(
     canon: CanonicalizationAlgorithm,
     name: &str,  // "DKIM-Signature", but with original (upper/lower) case
     formatted_hdr_without_sig: &str,
@@ -774,12 +843,12 @@ pub fn canon_dkim_header(
         }
     };
 
-    trace!("canonicalized DKIM header: {result:?}");
+    //trace!("canonicalized DKIM header: {result:?}");
 
     result
 }
 
-pub fn get_default_signed_headers() -> Vec<FieldName> {
+pub(crate) fn get_default_signed_headers() -> Vec<FieldName> {
     let def = [
         // TODO from opendkim, revise, make configurable:
         "From",
@@ -808,8 +877,9 @@ pub fn get_default_signed_headers() -> Vec<FieldName> {
     def.into_iter().map(|x| FieldName::new(x).unwrap()).collect()
 }
 
-pub fn select_signed_headers(
+pub(crate) fn select_signed_headers(
     signed_headers: &[FieldName],
+    _oversigned_headers: &[FieldName],
     headers: &HeaderFields,
 ) -> Vec<FieldName> {
     let mut result = vec![];
@@ -820,13 +890,14 @@ pub fn select_signed_headers(
         }
     }
 
-    let oversign = [
-        "From",
-    ];
+    // let oversign = [
+    //     "From",
+    // ];
 
-    for x in oversign {
-        result.push(FieldName::new(x).unwrap());
-    }
+    // TODO
+    // for x in oversigned_headers {
+    //     result.push(FieldName::new(x).unwrap());
+    // }
 
     result
 }
@@ -846,7 +917,7 @@ mod tests {
    Subject:demo=20run|Date:July=205,=202005=203:44:08=20PM=20-0700;
   bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=;
   b=dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZVoG4ZHRNiYzR";
-        let example = example.replace("\n", "\r\n");
+        let example = example.replace('\n', "\r\n");
 
         let q = TagList::from_str(&example).unwrap();
 
@@ -858,8 +929,8 @@ mod tests {
                 algorithm: SignatureAlgorithm::RsaSha256,
                 signature_data: base64::decode(
                         "dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZVoG4ZHRNiYzR"
-                    ).unwrap(),
-                body_hash: base64::decode("MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=").unwrap(),
+                    ).unwrap().into(),
+                body_hash: base64::decode("MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=").unwrap().into(),
                 canonicalization: Canonicalization {
                     header: CanonicalizationAlgorithm::Simple,
                     body: CanonicalizationAlgorithm::Simple,
@@ -872,7 +943,7 @@ mod tests {
                     FieldName::new("date").unwrap(),
                 ],
                 user_id: Ident::new("@eng.example.net").unwrap(),
-                selector: "brisbane".into(),
+                selector: Selector::new("brisbane").unwrap(),
                 body_length: None,
                 timestamp: Some(1117574938),
                 expiration: Some(1118006938),
@@ -897,7 +968,7 @@ mod tests {
    ;
   bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=;
   b=dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZVoG4ZHRNiYzR";
-        let example = example.replace("\n", "\r\n");
+        let example = example.replace('\n', "\r\n");
 
         let q = TagList::from_str(&example).unwrap();
 

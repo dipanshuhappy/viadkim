@@ -16,10 +16,7 @@
 // does not require the whole message in memory at once, is inspired from
 // OpenDKIM.
 
-// #![allow(unused_imports, unused_variables)]
-// #![allow(dead_code, unused_imports, unused_variables)]
-
-pub mod canon;  // c14n ?
+pub mod canon;
 pub mod crypto;
 mod dqp;
 pub mod header;
@@ -28,12 +25,12 @@ pub mod record;
 pub mod signature;
 pub mod signer;
 mod tag_list;
+mod util;
 pub mod verifier;
 
 pub use crate::{
     crypto::SigningKey,
     header::{FieldBody, FieldName, HeaderFields},
-    signature::{Canonicalization, CanonicalizationAlgorithm, SignatureAlgorithm},
     signer::{Signer, SignerError, SigningRequest},
     verifier::{VerificationResult, VerificationStatus, Verifier, VerifierError},
 };

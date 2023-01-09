@@ -142,7 +142,7 @@ mod tests {
         let example =
             "=20v=20 =3     D=20=FF1=\r\n\t3B我=0D=0A=09a=3Drsa-sha256=3B=20s=3Dbrisbane=3B";
         assert_eq!(
-            BStr::new(&dqp_decode(&example[..]).unwrap()),
+            BStr::new(&dqp_decode(example).unwrap()),
             BStr::new(&b" v = \xff1;\xe6\x88\x91\r\n\ta=rsa-sha256; s=brisbane;"[..])
         );
     }

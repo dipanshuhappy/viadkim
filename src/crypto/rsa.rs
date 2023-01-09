@@ -1,15 +1,11 @@
 use crate::crypto::{HashAlgorithm, SigningError, VerificationError};
 use rsa::{
-    pkcs1::DecodeRsaPublicKey as _,
-    pkcs8::{DecodePrivateKey as _, DecodePublicKey as _},
-    PaddingScheme, PublicKey as _, PublicKeyParts, RsaPrivateKey, RsaPublicKey,
+    pkcs1::DecodeRsaPublicKey as _, pkcs8::DecodePublicKey as _, PaddingScheme, PublicKey as _,
+    PublicKeyParts, RsaPrivateKey, RsaPublicKey,
 };
 use sha2::Sha256;
-use std::{
-    io::{self, ErrorKind},
-    path::Path,
-};
 
+/*
 pub fn read_rsa_private_key_file(path: impl AsRef<Path>) -> io::Result<RsaPrivateKey> {
     RsaPrivateKey::read_pkcs8_pem_file(path).map_err(|_| io::Error::from(ErrorKind::Other))
 }
@@ -18,6 +14,7 @@ pub fn read_rsa_private_key(s: &str) -> io::Result<RsaPrivateKey> {
     // TODO do not allow small keys (like for public key)
     RsaPrivateKey::from_pkcs8_pem(s).map_err(|_| io::Error::from(ErrorKind::Other))
 }
+*/
 
 pub fn get_public_key_size(k: &RsaPublicKey) -> usize {
     k.size() * 8
@@ -29,12 +26,12 @@ pub fn verify_signature_rsa(
     msg: &[u8],
     signature_data: &[u8],
 ) -> Result<(), VerificationError> {
-    // first try reading data as RSAPublicKey
-    // (what was actually specified in RFC, but not what is in appendix)
-    // then try reading data as SubjectPublicKeyInfo
+    // first try reading data as SubjectPublicKeyInfo
     // (*de facto* procedure, as shown in examples in appendix of RFC)
-    let public_key = RsaPublicKey::from_pkcs1_der(key_data)
-        .or_else(|_| RsaPublicKey::from_public_key_der(key_data))
+    // then try reading data as RSAPublicKey
+    // (what was actually specified in RFC, but not what is in appendix)
+    let public_key = RsaPublicKey::from_public_key_der(key_data)
+        .or_else(|_| RsaPublicKey::from_pkcs1_der(key_data))
         .map_err(|_| VerificationError::InvalidKey)?;
 
     if get_public_key_size(&public_key) < 1024 {
@@ -69,12 +66,14 @@ pub fn sign_rsa(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rsa::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
-    use tracing::debug;
+    use rsa::pkcs8::DecodePrivateKey as _;
 
-    #[ignore]
+    /*
     #[test]
     fn make_rsa2048_key() {
+        use rsa::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
+        use tracing::debug;
+
         let mut rng = rand::thread_rng();
 
         let bits = 2048;
@@ -88,6 +87,7 @@ mod tests {
         let s: &str = s.as_ref();
         debug!("sec: {s}");
     }
+    */
 
     #[test]
     fn read_rsa2048_key() {
@@ -134,7 +134,7 @@ CQ8od0/ltBQAeX9B2QXumw==
 
         assert_eq!(get_public_key_size(&pubkey), 2048);
 
-        let privkey2 = crate::crypto::read_signing_key(privkey_s).unwrap();
+        let privkey2 = crate::crypto::SigningKey::from_pkcs8_pem(privkey_s).unwrap();
 
         match privkey2 {
             crate::crypto::SigningKey::Rsa(privkey2) => {

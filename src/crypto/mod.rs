@@ -23,9 +23,9 @@
 //! over the years.
 //!
 //! Because of this situation, viadkim first tries reading the public key in DNS
-//! in the (de-iure standard) RSAPublicKey format. If this fails it falls back
-//! to trying reading the public key in the (de-facto standard)
-//! SubjectPublicKeyInfo format.
+//! in the (de-facto standard) SubjectPublicKeyInfo format. If this fails it
+//! falls back to trying reading the public key in the (de-iure standard)
+//! RSAPublicKey format.
 //!
 //! ## Ed25519
 //!
@@ -53,20 +53,58 @@ mod rsa;
 
 pub use self::{
     ed25519::{
-        read_ed25519_private_key, read_ed25519_private_key_file, sign_ed25519,
+        /*read_ed25519_private_key, read_ed25519_private_key_file,*/ sign_ed25519,
         verify_signature_ed25519,
     },
-    rsa::{read_rsa_private_key, read_rsa_private_key_file, sign_rsa, verify_signature_rsa},
+    hash::{CountingHasher, HashStatus, InsufficientInput},
+    rsa::{/*read_rsa_private_key, read_rsa_private_key_file,*/ sign_rsa, verify_signature_rsa},
 };
-pub use hash::{data_hash_digest, CountingHasher, HashStatus, InsufficientInput};
+// TODO
+pub(crate) use hash::data_hash_digest;
 
+use crate::util::ToStr;
 use ::rsa::RsaPrivateKey;
 use ed25519_dalek::Keypair as Ed25519Keypair;
-use std::fmt::{self, Display, Formatter};
+use pkcs8::{der::pem::PemLabel, Document, PrivateKeyInfo};
+use std::{
+    fmt::{self, Display, Formatter},
+    io::{self, ErrorKind},
+};
 
+#[derive(Debug)]
 pub enum SigningKey {
     Rsa(RsaPrivateKey),
     Ed25519(Ed25519Keypair),
+}
+
+impl SigningKey {
+    pub fn to_key_type(&self) -> KeyType {
+        match self {
+            Self::Rsa(_) => KeyType::Rsa,
+            Self::Ed25519(_) => KeyType::Ed25519,
+        }
+    }
+
+    // TODO
+    pub fn from_pkcs8_pem(s: &str) -> io::Result<Self> {
+        let (label, private_key_der) = Document::from_pem(s)
+            .map_err(|_| io::Error::new(ErrorKind::Other, "not a PEM document"))?;
+
+        PrivateKeyInfo::validate_pem_label(label)
+            .map_err(|_| io::Error::new(ErrorKind::Other, "not a PEM document"))?;
+
+        // lightweight (could be Copy), therefore clonable:
+        let pk = PrivateKeyInfo::try_from(private_key_der.as_bytes())
+            .map_err(|_| io::Error::new(ErrorKind::Other, "invalid private key format"))?;
+
+        if let Ok(rpk) = RsaPrivateKey::try_from(pk.clone()) {
+            Ok(Self::Rsa(rpk))
+        } else if let Ok(ekp) = ::ed25519::pkcs8::KeypairBytes::try_from(pk.clone()) {
+            Ok(Self::Ed25519(self::ed25519::keypair_bytes_to_keypair(ekp)))
+        } else {
+            Err(io::Error::new(ErrorKind::Other, "unknown private key type"))
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,9 +113,26 @@ pub enum KeyType {
     Ed25519,
 }
 
+impl ToStr for KeyType {
+    fn to_str(&self) -> &'static str {
+        match self {
+            Self::Rsa => "rsa",
+            Self::Ed25519 => "ed25519",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HashAlgorithm {
     Sha256,
+}
+
+impl ToStr for HashAlgorithm {
+    fn to_str(&self) -> &'static str {
+        match self {
+            Self::Sha256 => "sha256",
+        }
+    }
 }
 
 impl HashAlgorithm {
@@ -108,27 +163,5 @@ pub enum SigningError {
 impl Display for SigningError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{self:?}")
-    }
-}
-
-// TODO
-pub fn read_signing_key(s: &str) -> std::io::Result<SigningKey> {
-    use pkcs8::PrivateKeyInfo;
-    use pkcs8::Document;
-    use pkcs8::der::pem::PemLabel;
-
-    let (label, private_key_der) = Document::from_pem(s).unwrap();
-
-    PrivateKeyInfo::validate_pem_label(label).unwrap();
-
-    // lightweight (could be Copy), therefore clonable:
-    let pk = PrivateKeyInfo::try_from(private_key_der.as_bytes()).unwrap();
-
-    if let Ok(rpk) = RsaPrivateKey::try_from(pk.clone()) {
-        return Ok(SigningKey::Rsa(rpk));
-    } else if let Ok(_ekp) = ::ed25519::pkcs8::KeypairBytes::try_from(pk.clone()) {
-        todo!();
-    } else {
-        return Err(std::io::Error::from(std::io::ErrorKind::Other));
     }
 }

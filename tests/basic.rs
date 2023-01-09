@@ -1,7 +1,9 @@
 use trust_dns_resolver::TokioAsyncResolver;
 use viadkim::{HeaderFields, Verifier};
 
+// TODO
 #[tokio::test]
+#[ignore = "live"]
 async fn basic_verify() {
     let _ = tracing_subscriber::fmt::try_init();
 

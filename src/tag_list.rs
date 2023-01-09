@@ -203,7 +203,7 @@ fn is_alphanum(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-fn is_tval_char(c: char) -> bool {
+pub fn is_tval_char(c: char) -> bool {
     // printable ASCII w/o ; or non-ASCII UTF-8
     matches!(c, '!'..=':' | '<'..='~') || !c.is_ascii()
 }
@@ -223,7 +223,7 @@ mod tests {
    ;
   bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=;
   b=dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZVoG4ZHRNiYzR";
-        let example = example.replace("\n", "\r\n");
+        let example = example.replace('\n', "\r\n");
 
         let q = TagList::from_str(&example).unwrap();
         assert!(!q.as_ref().is_empty());

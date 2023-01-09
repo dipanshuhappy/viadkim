@@ -5,7 +5,8 @@ use viadkim::{HeaderFields, Verifier};
 
 #[tokio::main]
 async fn main() {
-    // let _ = tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt::try_init();
+
     let mut args = env::args();
 
     let path = match (args.next().as_deref(), args.next()) {
@@ -18,7 +19,7 @@ async fn main() {
 
     let s = fs::read_to_string(path).await.unwrap();
 
-    let s = s.replace("\n", "\r\n");
+    let s = s.replace('\n', "\r\n");
 
     let (header, body) = s.split_once("\r\n\r\n").unwrap();
 

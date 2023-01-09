@@ -4,9 +4,8 @@ use crate::{
         parse_base64_tag_value, parse_colon_separated_tag_value, parse_qp_section_tag_value,
         TagList, TagSpec,
     },
-    verifier::LookupTxt,
 };
-use std::io;
+use std::str::FromStr;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ServiceType {
@@ -24,6 +23,8 @@ pub enum Flags {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DkimKeyRecordParseError {
+    TagListSyntax,
+
     UnsupportedVersion,
     MisplacedVersionTag,
     UnsupportedKeyType,
@@ -39,13 +40,28 @@ pub struct DkimKeyRecord {
     pub hash_algorithms: Vec<HashAlgorithm>,  // non-empty
     pub key_type: KeyType,
     pub notes: Option<String>,
-    pub key_data: Vec<u8>,
+    pub key_data: Box<[u8]>,
     pub service_types: Vec<ServiceType>,  // non-empty
     pub flags: Vec<Flags>,
 }
 
+impl FromStr for DkimKeyRecord {
+    type Err = DkimKeyRecordParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let tag_list = match TagList::from_str(s) {
+            Ok(r) => r,
+            Err(_e) => {
+                return Err(DkimKeyRecordParseError::TagListSyntax);
+            }
+        };
+
+        Self::from_tag_list(&tag_list)
+    }
+}
+
 impl DkimKeyRecord {
-    pub fn from_tag_list(tag_list: &TagList<'_>) -> Result<Self, DkimKeyRecordParseError> {
+    fn from_tag_list(tag_list: &TagList<'_>) -> Result<Self, DkimKeyRecordParseError> {
         let mut hash_algorithms = HashAlgorithm::all();
         let mut key_type = KeyType::Rsa;
         let mut notes = None;
@@ -94,7 +110,7 @@ impl DkimKeyRecord {
                     }
                     let v = parse_base64_tag_value(value)
                         .map_err(|_| DkimKeyRecordParseError::ValueSyntax)?;
-                    key_data = Some(v);
+                    key_data = Some(v.into());
                 }
                 "s" => {
                     let mut st = vec![];
@@ -142,33 +158,10 @@ impl DkimKeyRecord {
     }
 }
 
-pub async fn look_up_records<T: LookupTxt + ?Sized>(
-    resolver: &T,
-    domain: &str,
-    selector: &str,
-) -> io::Result<Vec<String>> {
-    let dname = format!("{selector}._domainkey.{domain}.");
-
-    let mut result = vec![];
-
-    // §6.1.2: ‘If the query for the public key returns multiple key records,
-    // the Verifier can choose one of the key records or may cycle through the
-    // key records […]. The order of the key records is unspecified.’ We return
-    // at most three keys.
-    for v in resolver.lookup_txt(&dname).await?.into_iter().take(3) {
-        let s = v?;
-        let s = String::from_utf8_lossy(&s);
-        result.push(s.into_owned());
-    }
-
-    Ok(result)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tag_list::TagList;
-    use trust_dns_resolver::TokioAsyncResolver;
 
     #[test]
     fn dkim_key_record_from_tag_list_ok() {
@@ -182,35 +175,10 @@ mod tests {
                 hash_algorithms: vec![HashAlgorithm::Sha256],
                 key_type: KeyType::Rsa,
                 notes: Some("highly interesting".into()),
-                key_data: b"abc".to_vec(),
+                key_data: b"abc".to_vec().into(),
                 service_types: vec![ServiceType::Email],
                 flags: vec![],
             }
-        );
-    }
-
-    #[ignore]
-    #[tokio::test]
-    async fn live_dkim_key_record() {
-        let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default()).unwrap();
-
-        let r = look_up_records(&resolver, "gluet.ch", "2020")
-            .await
-            .unwrap();
-
-        let taglist = TagList::from_str(&r[0]).unwrap();
-
-        let rec = DkimKeyRecord::from_tag_list(&taglist).unwrap();
-
-        assert_eq!(
-            &base64::encode(rec.key_data),
-            "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzQQGy3HpwbcWhBXXDTBv\
-            bWGJy38WK8kLascRJyvYAkFCLx1QqCi7Q7baABkee5lkGRGLQidUyNfDoW9MNCiT\
-            5SLhnl2iPaT9kcKhAYSezMNWyQxueXhLIZ5wT9LKCfFNVvz2R5SNcVE7a/CxU4XA\
-            iEhNsKg4o/LyEhE1665BT0GizPz5ukNwwePQrLgGSpygHd/TQBa/xzKlQdLvTHiQ\
-            OqgnoG/G3ThVOnQV/Ntc8UjKDZO5n1pynTsVmtmCASwykN6ZDZTaeaRCnIrS02nO\
-            YB1ba2TJl+xugdNja1agDvUL6t0n2kfGp85A/Z6v5Fq0nlzvmwHth2eg3lVVgI2c\
-            KwIDAQAB"
         );
     }
 }

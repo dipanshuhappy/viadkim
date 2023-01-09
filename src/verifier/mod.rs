@@ -10,14 +10,16 @@ use crate::{
     },
     header::HeaderFields,
     parse::strip_fws,
-    record::{self, DkimKeyRecord, ServiceType},
+    record::{DkimKeyRecord, ServiceType},
     signature::{
         self, CanonicalizationAlgorithm, DkimSignature, DkimSignatureError, DkimSignatureParseError,
     },
-    tag_list::TagList,
 };
-use bstr::BStr;
-use std::{io, str, time::Duration};
+use std::{
+    io,
+    str::{self, FromStr},
+    time::Duration,
+};
 use tokio::{task::JoinHandle, time};
 use tracing::trace;
 
@@ -59,7 +61,8 @@ pub enum VerifierError {
     VerificationFailure(VerificationError),
     BodyHashMismatch,
     InsufficientBodyLength,
-    KeyLookup,  // TODO = Tempfail
+    NoKeyFound,
+    KeyLookup,
 }
 
 struct SigTask {
@@ -120,10 +123,13 @@ fn compute_data_hash(task: &mut VerifyingTask, headers: &HeaderFields) {
             sig.signed_headers.as_slice(),
         );
 
-        trace!("canonicalized headers: {:?}", BStr::new(&headers));
+        //trace!("canonicalized headers: {:?}", BStr::new(&headers));
 
         let original_canon_header = make_original_canon_header(
-            task.name.as_ref().unwrap(), task.value.as_ref().unwrap(), sig.canonicalization.header);
+            task.name.as_ref().unwrap(),
+            task.value.as_ref().unwrap(),
+            sig.canonicalization.header,
+        );
 
         let data_hash = crypto::data_hash_digest(
             sig.algorithm.to_hash_algorithm(),
@@ -154,13 +160,36 @@ where
         let lookup_task = tokio::spawn(async move {
             time::timeout(
                 lookup_timeout,
-                record::look_up_records(&resolver, domain.as_ref(), &selector),
+                look_up_records(&resolver, domain.as_ref(), selector.as_ref()),
             )
             .await?
         });
 
         task.lookup_task = Some(lookup_task);
     }
+}
+
+async fn look_up_records<T: LookupTxt + ?Sized>(
+    resolver: &T,
+    domain: &str,
+    selector: &str,
+) -> io::Result<Vec<String>> {
+    let dname = format!("{selector}._domainkey.{domain}.");
+
+    let mut result = vec![];
+
+    // §6.1.2: ‘If the query for the public key returns multiple key records,
+    // the Verifier can choose one of the key records or may cycle through the
+    // key records […]. The order of the key records is unspecified.’ We return
+    // at most three keys.
+    for v in resolver.lookup_txt(&dname).await?.into_iter().take(3) {
+        // TODO check if error is io::ErrorKind::NotFound here => should map to VerifierError::NoKeyFound!
+        let s = v?;
+        let s = String::from_utf8_lossy(&s);
+        result.push(s.into_owned());
+    }
+
+    Ok(result)
 }
 
 async fn verify_sig(task: &mut VerifyingTask) {
@@ -177,20 +206,22 @@ async fn verify_sig(task: &mut VerifyingTask) {
             Ok(txts) => {
                 if txts.is_empty() {
                     trace!("no key record");
-                    task.status = Some(VerificationStatus::Failure(VerifierError::KeyLookup));
+                    task.status = Some(VerificationStatus::Failure(VerifierError::NoKeyFound));
                     return;
                 }
                 txts
             }
             Err(e) => {
+                // TODO is this branch also entered on NXDOMAIN? => should return NoKeyFound instead
                 trace!("could not look up key record: {e}");
                 task.status = Some(VerificationStatus::Failure(VerifierError::KeyLookup));
                 return;
             }
         };
 
-        // step through all (usually only 1, but many allowed) key records
         assert!(!txts.is_empty());
+
+        // step through all (usually only 1, but many allowed) key records
         for (i, key_record) in txts.into_iter().enumerate() {
             trace!("trying verification using DKIM key record {}", i + 1);
 
@@ -202,12 +233,10 @@ async fn verify_sig(task: &mut VerifyingTask) {
                 &key_record,
             ) {
                 Ok(()) => {
-                    trace!("successfully verified");
                     task.status = Some(VerificationStatus::Success);
                     break;
                 }
                 Err(e) => {
-                    trace!("verification failed");
                     // record last error seen
                     task.status = Some(VerificationStatus::Failure(e));
                 }
@@ -223,26 +252,30 @@ fn verify_signature_with_record(
     signature_data: &[u8],
     key_record: &str,
 ) -> Result<(), VerifierError> {
-    let tag_list = match TagList::from_str(key_record) {
-        Ok(r) => r,
-        Err(_e) => {
-            return Err(VerifierError::KeyRecordSyntax);
-        }
-    };
+    // let tag_list = match TagList::from_str(key_record) {
+    //     Ok(r) => r,
+    //     Err(_e) => {
+    //         trace!("invalid key record syntax");
+    //         return Err(VerifierError::KeyRecordSyntax);
+    //     }
+    // };
 
-    let rec = match DkimKeyRecord::from_tag_list(&tag_list) {
+    let rec = match DkimKeyRecord::from_str(key_record) {
         Ok(r) => r,
         Err(_e) => {
+            trace!("invalid key record syntax");
             return Err(VerifierError::KeyRecordSyntax);
         }
     };
 
     if !rec.hash_algorithms.contains(&hash_alg) {
+        trace!("disallowed hash algorithm");
         return Err(VerifierError::DisallowedHashAlgorithm);
     }
     if !(rec.service_types.contains(&ServiceType::Any)
         || rec.service_types.contains(&ServiceType::Email))
     {
+        trace!("disallowed service type");
         return Err(VerifierError::DisallowedServiceType);
     }
     // ...
@@ -311,7 +344,7 @@ impl Verifier {
         for task in tasks {
             let body_hasher = match &task.sig {
                 Some(sig) => {
-                    let body_len = sig.body_length;
+                    let body_len = sig.body_length.map(|len| len.try_into().unwrap_or(usize::MAX));
                     let hash_alg = sig.algorithm.to_hash_algorithm();
                     Some(CountingHasher::new(hash_alg, body_len))
 
@@ -397,10 +430,10 @@ impl Verifier {
 
                     let status = match hasher.finish() {
                         Ok((h, _)) => {
-                            if h != task.sig.as_ref().unwrap().body_hash {
+                            if h != task.sig.as_ref().unwrap().body_hash.as_ref() {
                                 // downgrade status Success -> Failure!
-                                trace!("body hash mismatch");
-                                    VerificationStatus::Failure(VerifierError::BodyHashMismatch)
+                                trace!("body hash mismatch: {}", &base64::encode(h));
+                                VerificationStatus::Failure(VerifierError::BodyHashMismatch)
                             } else {
                                 trace!("body hash matched");
                                 VerificationStatus::Success
@@ -437,12 +470,6 @@ fn find_dkim_signatures(headers: &HeaderFields) -> Vec<VerifyingTask> {
         .take(20);  // hard limit
 
     for (idx, (name, value)) in dkim_headers {
-        trace!(
-            "found DKIM-Signature header at index {}: {:?}",
-            idx,
-            BStr::new(value.as_ref())
-        );
-
         // at this point, the DKIM sig "counts", and a result must be recorded
 
         // well-formed DKIM-Signature contain only UTF-8
@@ -461,7 +488,7 @@ fn find_dkim_signatures(headers: &HeaderFields) -> Vec<VerifyingTask> {
             }
         };
 
-        let t = match signature::parse_dkim_signature(value) {
+        let t = match DkimSignature::from_str(value) {
             Ok(sig) => VerifyingTask::new(idx, sig, name.as_ref().into(), value.into()),
             Err(e) => VerifyingTask::new_not_started(idx, e),
         };
@@ -519,7 +546,7 @@ mod tests {
   h=from:to:subject:date;
   bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=;
   b=dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZVoG4ZHRNiYzR";
-        let example = example.replace("\n", "\r\n");
+        let example = example.replace('\n', "\r\n");
 
         let s = make_original_canon_header("Dkim-Signature", &example, CanonicalizationAlgorithm::Relaxed);
 
@@ -528,4 +555,29 @@ mod tests {
             s=brisbane; c=simple; q=dns/txt; i=@eng.example.net; h=from:to:subject:date; \
             bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=; b=");
     }
+
+    //#[ignore]
+    //#[tokio::test]
+    //async fn live_dkim_key_record() {
+    //    let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default()).unwrap();
+
+    //    let r = look_up_records(&resolver, "gluet.ch", "2020")
+    //        .await
+    //        .unwrap();
+
+    //    let taglist = TagList::from_str(&r[0]).unwrap();
+
+    //    let rec = DkimKeyRecord::from_tag_list(&taglist).unwrap();
+
+    //    assert_eq!(
+    //        &base64::encode(rec.key_data),
+    //        "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzQQGy3HpwbcWhBXXDTBv\
+    //        bWGJy38WK8kLascRJyvYAkFCLx1QqCi7Q7baABkee5lkGRGLQidUyNfDoW9MNCiT\
+    //        5SLhnl2iPaT9kcKhAYSezMNWyQxueXhLIZ5wT9LKCfFNVvz2R5SNcVE7a/CxU4XA\
+    //        iEhNsKg4o/LyEhE1665BT0GizPz5ukNwwePQrLgGSpygHd/TQBa/xzKlQdLvTHiQ\
+    //        OqgnoG/G3ThVOnQV/Ntc8UjKDZO5n1pynTsVmtmCASwykN6ZDZTaeaRCnIrS02nO\
+    //        YB1ba2TJl+xugdNja1agDvUL6t0n2kfGp85A/Z6v5Fq0nlzvmwHth2eg3lVVgI2c\
+    //        KwIDAQAB"
+    //    );
+    //}
 }
