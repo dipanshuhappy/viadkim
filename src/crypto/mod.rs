@@ -52,19 +52,16 @@ mod hash;
 mod rsa;
 
 pub use self::{
-    ed25519::{
-        /*read_ed25519_private_key, read_ed25519_private_key_file,*/ sign_ed25519,
-        verify_ed25519, read_ed25519_public_key
-    },
+    ed25519::{read_ed25519_verifying_key, sign_ed25519, verify_ed25519},
     hash::{CountingHasher, HashStatus, InsufficientInput},
-    rsa::{/*read_rsa_private_key, read_rsa_private_key_file,*/ sign_rsa, verify_rsa, read_rsa_public_key},
+    rsa::{read_rsa_public_key, sign_rsa, verify_rsa},
 };
 // TODO
 pub(crate) use hash::data_hash_digest;
 
 use crate::util::CanonicalStr;
-use ::rsa::{RsaPublicKey, RsaPrivateKey};
-use ed25519_dalek::{Keypair as Ed25519Keypair, PublicKey as Ed25519PublicKey};
+use ::rsa::{RsaPrivateKey, RsaPublicKey};
+use ed25519_dalek::{SigningKey as Ed25519SigningKey, VerifyingKey as Ed25519VerifyingKey};
 use pkcs8::{der::pem::PemLabel, Document, PrivateKeyInfo};
 use std::{
     fmt::{self, Display, Formatter},
@@ -74,7 +71,7 @@ use std::{
 #[derive(Debug)]
 pub enum SigningKey {
     Rsa(RsaPrivateKey),
-    Ed25519(Ed25519Keypair),
+    Ed25519(Ed25519SigningKey),
 }
 
 impl SigningKey {
@@ -99,8 +96,8 @@ impl SigningKey {
 
         if let Ok(rpk) = RsaPrivateKey::try_from(pk.clone()) {
             Ok(Self::Rsa(rpk))
-        } else if let Ok(ekp) = ::ed25519::pkcs8::KeypairBytes::try_from(pk.clone()) {
-            Ok(Self::Ed25519(self::ed25519::keypair_bytes_to_keypair(ekp)))
+        } else if let Ok(esk) = Ed25519SigningKey::try_from(pk.clone()) {
+            Ok(Self::Ed25519(esk))
         } else {
             Err(io::Error::new(ErrorKind::Other, "unknown private key type"))
         }
@@ -110,7 +107,7 @@ impl SigningKey {
 #[derive(Debug)]
 pub enum VerifyingKey {
     Rsa(RsaPublicKey),
-    Ed25519(Ed25519PublicKey),
+    Ed25519(Ed25519VerifyingKey),
 }
 
 impl VerifyingKey {
@@ -121,25 +118,21 @@ impl VerifyingKey {
         }
     }
 
-    // TODO
-    pub fn from_key_data(
-        key_type: KeyType,
-        key_data: &[u8],
-    ) -> Result<Self, VerificationError> {
+    pub fn from_key_data(key_type: KeyType, key_data: &[u8]) -> Result<Self, VerificationError> {
         match key_type {
             KeyType::Rsa => {
-                let rsa_public_key = read_rsa_public_key(key_data)?;
-                Ok(VerifyingKey::Rsa(rsa_public_key))
+                let public_key = read_rsa_public_key(key_data)?;
+                Ok(VerifyingKey::Rsa(public_key))
             }
             KeyType::Ed25519 => {
-                let ed25519_public_key = read_ed25519_public_key(key_data)?;
-                Ok(VerifyingKey::Ed25519(ed25519_public_key))
+                let verifying_key = read_ed25519_verifying_key(key_data)?;
+                Ok(VerifyingKey::Ed25519(verifying_key))
             }
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum KeyType {
     Rsa,
     Ed25519,
@@ -154,7 +147,7 @@ impl CanonicalStr for KeyType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HashAlgorithm {
     Sha256,
 }
@@ -173,7 +166,7 @@ impl HashAlgorithm {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerificationError {
     InvalidKey,
     InsufficientKeySize,
@@ -183,7 +176,12 @@ pub enum VerificationError {
 
 impl Display for VerificationError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::InvalidKey => write!(f, "invalid key data"),
+            Self::InsufficientKeySize => write!(f, "key too small"),
+            Self::InvalidSignature => write!(f, "invalid signature data"),
+            Self::VerificationFailure => write!(f, "signature verification failed"),
+        }
     }
 }
 
@@ -192,6 +190,7 @@ pub enum SigningError {
     SigningFailure,
 }
 
+// TODO
 impl Display for SigningError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{self:?}")

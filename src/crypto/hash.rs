@@ -70,14 +70,14 @@ impl CountingHasher {
         }
     }
 
-    pub fn finish(self) -> Result<(Vec<u8>, usize), InsufficientInput> {
+    pub fn finish(self) -> Result<(Box<[u8]>, usize), InsufficientInput> {
         if self.length.is_some() && !self.is_done() {
             return Err(InsufficientInput);
         }
 
         let bytes = self.digest.finalize();
 
-        Ok((bytes.to_vec(), self.bytes_written))
+        Ok((Box::from(bytes), self.bytes_written))
     }
 
     pub fn is_done(&self) -> bool {
@@ -174,14 +174,15 @@ David
         );
     }
 
-    fn hash_digest(hash_alg: HashAlgorithm, msg: &[u8]) -> Vec<u8> {
+    fn hash_digest(hash_alg: HashAlgorithm, msg: &[u8]) -> Box<[u8]> {
         use sha2::Digest;
 
         match hash_alg {
             HashAlgorithm::Sha256 => {
                 let mut hasher = Sha256::new();
                 hasher.update(msg);
-                hasher.finalize().to_vec()
+                let bytes = hasher.finalize();
+                Box::from(&bytes[..])
             }
         }
     }

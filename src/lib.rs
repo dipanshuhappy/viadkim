@@ -16,6 +16,7 @@
 // does not require the whole message in memory at once, is inspired from
 // OpenDKIM.
 
+mod body_hash;
 pub mod canon;
 pub mod crypto;
 mod dqp;

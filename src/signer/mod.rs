@@ -5,15 +5,11 @@ mod key_store;
 pub use key_store::{KeyId, KeyStore};
 
 use crate::{
-    canon::{self, BodyCanonStatus, BodyCanonicalizer},
-    crypto::{
-        self, CountingHasher, HashAlgorithm, HashStatus, InsufficientInput, KeyType, SigningKey,
-    },
+    body_hash::{CanonicalizingHasher, CanonicalizingHasherBuilder},
+    canon::{self, BodyCanonStatus},
+    crypto::{self, HashAlgorithm, InsufficientInput, KeyType, SigningKey},
     header::{FieldName, HeaderFields},
-    signature::{
-        self, Canonicalization, CanonicalizationAlgorithm, DkimSignature, DomainName, Ident,
-        Selector, LINE_WIDTH,
-    },
+    signature::{self, Canonicalization, DkimSignature, DomainName, Ident, Selector, LINE_WIDTH},
 };
 use std::time::{Duration, SystemTime};
 use tracing::trace;
@@ -92,7 +88,6 @@ impl SigningRequest {
 
 struct SigningTask {
     request: SigningRequest,
-    body_hasher: CountingHasher,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -127,8 +122,7 @@ pub enum SigningStatus {
 pub struct Signer {
     tasks: Vec<SigningTask>,  // non-empty (?)
     headers: HeaderFields,
-    body_canonicalizer_simple: BodyCanonicalizer,
-    body_canonicalizer_relaxed: BodyCanonicalizer,
+    canonicalizing_hasher: CanonicalizingHasher,
 }
 
 // The Signer design is unpleasant to use, rethink
@@ -152,18 +146,18 @@ impl Signer {
         // check signing request, eg must sign From header etc.
 
         let mut tasks = vec![];
+        let mut canonicalizing_hasher = CanonicalizingHasherBuilder::new();
 
         for request in requests {
-            let hash_alg = request.hash_alg;
             let body_length = match request.body_length {
                 BodyLength::All | BodyLength::OnlyMessageLength => None,
                 BodyLength::Exact(n) => Some(n.try_into().unwrap_or(usize::MAX)),
             };
+            let hash_alg = request.hash_alg;
+            let canon_kind = request.canonicalization.body;
+            canonicalizing_hasher.register_canon(body_length, hash_alg, canon_kind);
 
-            let task = SigningTask {
-                request,
-                body_hasher: CountingHasher::new(hash_alg, body_length),
-            };
+            let task = SigningTask { request };
 
             tasks.push(task);
         }
@@ -171,39 +165,12 @@ impl Signer {
         Ok(Self {
             tasks,
             headers,
-            body_canonicalizer_simple: BodyCanonicalizer::simple(),
-            body_canonicalizer_relaxed: BodyCanonicalizer::relaxed(),
+            canonicalizing_hasher: canonicalizing_hasher.build(),
         })
     }
 
     pub fn body_chunk(&mut self, chunk: &[u8]) -> BodyCanonStatus {
-        let mut cached_canonicalized_chunk_simple = None;
-        let mut cached_canonicalized_chunk_relaxed = None;
-
-        let mut all_done = true;
-
-        for task in &mut self.tasks {
-            if !task.body_hasher.is_done() {
-                let canon_kind = task.request.canonicalization.body;
-
-                let canonicalized_chunk = match canon_kind {
-                    CanonicalizationAlgorithm::Simple => cached_canonicalized_chunk_simple
-                        .get_or_insert_with(|| self.body_canonicalizer_simple.canon_chunk(chunk)),
-                    CanonicalizationAlgorithm::Relaxed => cached_canonicalized_chunk_relaxed
-                        .get_or_insert_with(|| self.body_canonicalizer_relaxed.canon_chunk(chunk)),
-                };
-
-                if let HashStatus::NotDone = task.body_hasher.update(canonicalized_chunk) {
-                    all_done = false;
-                }
-            }
-        }
-
-        if all_done {
-            BodyCanonStatus::Done
-        } else {
-            BodyCanonStatus::NotDone
-        }
+        self.canonicalizing_hasher.hash_chunk(chunk)
     }
 
     pub async fn finish<T>(self, key_store: &T) -> Vec<SigningResult>
@@ -212,21 +179,18 @@ impl Signer {
     {
         let mut result = vec![];
 
-        let cached_canonicalized_chunk_simple = self.body_canonicalizer_simple.finish_canon();
-        let cached_canonicalized_chunk_relaxed = self.body_canonicalizer_relaxed.finish_canon();
+        let hasher_results = self.canonicalizing_hasher.finish();
 
         for task in self.tasks {
-            let canon_kind = task.request.canonicalization.body;
-            let canonicalized_chunk = match canon_kind {
-                CanonicalizationAlgorithm::Simple => &cached_canonicalized_chunk_simple[..],
-                CanonicalizationAlgorithm::Relaxed => &cached_canonicalized_chunk_relaxed[..],
+            let body_length = match task.request.body_length {
+                BodyLength::All | BodyLength::OnlyMessageLength => None,
+                BodyLength::Exact(n) => Some(n.try_into().unwrap_or(usize::MAX)),
             };
+            let hash_alg = task.request.hash_alg;
+            let canon_kind = task.request.canonicalization.body;
+            let key = (body_length, hash_alg, canon_kind);
 
-            let mut hasher = task.body_hasher;
-
-            hasher.update(canonicalized_chunk);
-
-            let (h, final_len) = match hasher.finish() {
+            let (h, &final_len) = match hasher_results.get(&key).unwrap() {
                 Ok((h, final_len)) => (h, final_len),
                 Err(InsufficientInput) => {
                     result.push(
@@ -240,7 +204,7 @@ impl Signer {
                 }
             };
 
-            let body_hash = h.into();
+            let body_hash = h.clone();
             let body_length = match task.request.body_length {
                 BodyLength::All => None,
                 BodyLength::OnlyMessageLength | BodyLength::Exact(_) => Some(final_len.try_into().unwrap_or(u64::MAX)),

@@ -14,13 +14,14 @@ use crate::{
 use base64ct::{Base64, Encoding};
 use std::{
     collections::HashSet,
+    hash::{Hash, Hasher},
     error::Error,
     fmt::{self, Display, Formatter, Write},
     str::{self, FromStr},
 };
 
 /// A signature algorithm.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SignatureAlgorithm {
     /// The *rsa-sha256* signature algorithm.
     RsaSha256,
@@ -85,7 +86,7 @@ impl FromStr for SignatureAlgorithm {
 }
 
 /// A canonicalization algorithm.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum CanonicalizationAlgorithm {
     /// The *simple* canonicalization algorithm.
     #[default]
@@ -124,7 +125,7 @@ impl FromStr for CanonicalizationAlgorithm {
 }
 
 /// A pair of header/body canonicalization algorithms.
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
 pub struct Canonicalization {
     /// The header canonicalization.
     pub header: CanonicalizationAlgorithm,
@@ -363,6 +364,12 @@ impl PartialEq for DomainName {
     }
 }
 
+impl Hash for DomainName {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.to_ascii_lowercase().hash(state);
+    }
+}
+
 // TODO revisit
 fn is_valid_dns_name(mut s: &str) -> bool {
     fn is_tld(s: &str) -> bool {
@@ -460,7 +467,13 @@ impl PartialEq for Selector {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+impl Hash for Selector {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.to_ascii_lowercase().hash(state);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DkimSignatureError {
     // circumstantial diagnostics:
     pub domain: Option<DomainName>,  // header.d=   (a valid domain name)
@@ -474,7 +487,7 @@ pub struct DkimSignatureError {
 // *for the purpose of parsing*
 // eg if whole sig can be parsed, but alg is unknown, can still return a DkimSignature (?)
 // TODO rename DkimSignatureErrorKind ?
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DkimSignatureErrorKind {
     MissingVersionTag,
     UnsupportedVersion,

@@ -1,69 +1,36 @@
 use crate::crypto::{SigningError, VerificationError};
-use ed25519::pkcs8::{DecodePublicKey as _, KeypairBytes, PublicKeyBytes};
 use ed25519_dalek::{
-    Keypair as Ed25519Keypair, PublicKey as Ed25519PublicKey, SecretKey,
-    Signature as Ed25519Signature, Signer as _, Verifier as _,
+    pkcs8::DecodePublicKey, Signature, Signer, SigningKey, Verifier, VerifyingKey,
 };
 
-/*
-pub fn read_ed25519_private_key_file(path: impl AsRef<Path>) -> io::Result<Ed25519Keypair> {
-    let s = fs::read_to_string(path)?;
-
-    read_ed25519_private_key(&s)
-}
-
-pub fn read_ed25519_private_key(s: &str) -> io::Result<Ed25519Keypair> {
-    let keypair =
-        KeypairBytes::from_pkcs8_pem(s).map_err(|_| io::Error::from(ErrorKind::Other))?;
-
-    let keypair = keypair_bytes_to_keypair(keypair);
-
-    Ok(keypair)
-}
-*/
-
-pub fn keypair_bytes_to_keypair(kpb: KeypairBytes) -> Ed25519Keypair {
-    let secret = SecretKey::from_bytes(&kpb.secret_key[..]).unwrap();
-    let public = Ed25519PublicKey::from(&secret);
-
-    Ed25519Keypair { secret, public }
-}
-
-pub fn read_ed25519_public_key(key_data: &[u8]) -> Result<Ed25519PublicKey, VerificationError> {
-    let public_key = match Ed25519PublicKey::from_bytes(key_data) {
-        Ok(pk) => pk,
-        Err(_) => {
-            let pkb = PublicKeyBytes::from_public_key_der(key_data)
-                .map_err(|_| VerificationError::InvalidKey)?;
-            Ed25519PublicKey::from_bytes(&pkb.0[..]).map_err(|_| VerificationError::InvalidKey)?
-        }
-    };
-
-    Ok(public_key)
+pub fn read_ed25519_verifying_key(key_data: &[u8]) -> Result<VerifyingKey, VerificationError> {
+    VerifyingKey::try_from(key_data)
+        .or_else(|_| VerifyingKey::from_public_key_der(key_data))
+        .map_err(|_| VerificationError::InvalidKey)
 }
 
 pub fn verify_ed25519(
-    public_key: &Ed25519PublicKey,
+    verifying_key: &VerifyingKey,
     msg: &[u8],
     signature_data: &[u8],
 ) -> Result<(), VerificationError> {
-    let signature = Ed25519Signature::try_from(signature_data)
+    let signature = Signature::from_slice(signature_data)
         .map_err(|_| VerificationError::InvalidSignature)?;
 
-    public_key
+    verifying_key
         .verify(msg, &signature)
         .map_err(|_| VerificationError::VerificationFailure)
 }
 
-pub fn sign_ed25519(keypair: &Ed25519Keypair, msg: &[u8]) -> Result<Vec<u8>, SigningError> {
-    let signature = keypair.sign(msg);
+pub fn sign_ed25519(signing_key: &SigningKey, msg: &[u8]) -> Result<Vec<u8>, SigningError> {
+    let signature = signing_key.sign(msg);
     Ok(signature.to_bytes().to_vec())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519::pkcs8::{DecodePrivateKey as _, EncodePrivateKey as _};
+    use ed25519_dalek::pkcs8::{DecodePrivateKey, EncodePrivateKey, KeypairBytes, PublicKeyBytes};
 
     /*
     #[test]
@@ -110,7 +77,7 @@ gSEA9VXMCgG0fXGIzwV7eOxKhz+Pe6DRmOBYjyvVoVrc/Dw=
 ";
         let mut kpb = KeypairBytes::from_pkcs8_pem(keypair_pem).unwrap();
 
-        assert_eq!(pkb.0, kpb.public_key.unwrap());
+        assert_eq!(pkb, kpb.public_key.unwrap());
 
         // bonus, PKCS#8 of private key only:
 

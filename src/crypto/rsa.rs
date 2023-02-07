@@ -1,20 +1,9 @@
 use crate::crypto::{HashAlgorithm, SigningError, VerificationError};
 use rsa::{
-    pkcs1::DecodeRsaPublicKey as _, pkcs8::DecodePublicKey as _, PaddingScheme, PublicKey as _,
-    PublicKeyParts, RsaPrivateKey, RsaPublicKey,
+    pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey, Pkcs1v15Sign, PublicKey, PublicKeyParts,
+    RsaPrivateKey, RsaPublicKey,
 };
 use sha2::Sha256;
-
-/*
-pub fn read_rsa_private_key_file(path: impl AsRef<Path>) -> io::Result<RsaPrivateKey> {
-    RsaPrivateKey::read_pkcs8_pem_file(path).map_err(|_| io::Error::from(ErrorKind::Other))
-}
-
-pub fn read_rsa_private_key(s: &str) -> io::Result<RsaPrivateKey> {
-    // TODO do not allow small keys (like for public key)
-    RsaPrivateKey::from_pkcs8_pem(s).map_err(|_| io::Error::from(ErrorKind::Other))
-}
-*/
 
 pub fn get_public_key_size(k: &RsaPublicKey) -> usize {
     k.size() * 8
@@ -43,14 +32,13 @@ pub fn verify_rsa(
     signature_data: &[u8],
 ) -> Result<(), VerificationError> {
     let result = match hash_alg {
-        HashAlgorithm::Sha256 => public_key.verify(
-            PaddingScheme::new_pkcs1v15_sign::<Sha256>(),
-            msg,
-            signature_data,
-        ),
+        HashAlgorithm::Sha256 => {
+            public_key.verify(Pkcs1v15Sign::new::<Sha256>(), msg, signature_data)
+        }
     };
 
-    result.map_err(|_| VerificationError::VerificationFailure)
+    // TODO consider recording rsa crypto error _e somewhere
+    result.map_err(|_e| VerificationError::VerificationFailure)
 }
 
 pub fn sign_rsa(
@@ -59,9 +47,7 @@ pub fn sign_rsa(
     msg: &[u8],
 ) -> Result<Vec<u8>, SigningError> {
     let result = match hash_alg {
-        HashAlgorithm::Sha256 => {
-            private_key.sign(PaddingScheme::new_pkcs1v15_sign::<Sha256>(), msg)
-        }
+        HashAlgorithm::Sha256 => private_key.sign(Pkcs1v15Sign::new::<Sha256>(), msg),
     };
 
     result.map_err(|_| SigningError::SigningFailure)
@@ -70,7 +56,7 @@ pub fn sign_rsa(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rsa::pkcs8::DecodePrivateKey as _;
+    use rsa::pkcs8::DecodePrivateKey;
 
     /*
     #[test]
