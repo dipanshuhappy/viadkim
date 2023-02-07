@@ -30,7 +30,8 @@ pub mod verifier;
 
 pub use crate::{
     crypto::SigningKey,
-    header::{FieldBody, FieldName, HeaderFields},
+    header::{FieldBody, FieldName, HeaderField, HeaderFields},
     signer::{Signer, SignerError, SigningRequest},
+    util::CanonicalStr,
     verifier::{VerificationResult, VerificationStatus, Verifier, VerifierError},
 };

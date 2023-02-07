@@ -1,7 +1,7 @@
 use crate::crypto::HashAlgorithm;
 use sha2::Sha256;
 
-pub fn data_hash_digest(hash_alg: HashAlgorithm, headers: &[u8], dkim_header: &str) -> Vec<u8> {
+pub fn data_hash_digest(hash_alg: HashAlgorithm, headers: &[u8], dkim_header: &str) -> Box<[u8]> {
     use sha2::Digest;
 
     match hash_alg {
@@ -9,7 +9,7 @@ pub fn data_hash_digest(hash_alg: HashAlgorithm, headers: &[u8], dkim_header: &s
             let mut hasher = Sha256::new();
             hasher.update(headers);
             hasher.update(dkim_header);
-            hasher.finalize().to_vec()
+            Box::from(&hasher.finalize()[..])
         }
     }
 }
@@ -90,6 +90,7 @@ mod tests {
     use super::*;
     use crate::canon::BodyCanonicalizer;
     use bstr::ByteSlice;
+    use base64ct::{Base64, Encoding};
 
     #[test]
     fn hasher_crlf_body() {
@@ -100,7 +101,7 @@ mod tests {
         let (hash, len) = hasher.finish().unwrap();
 
         assert_eq!(
-            base64::encode(hash),
+            Base64::encode_string(&hash),
             "frcCV1k9oG9oKj3dpUqdJg1PxRT2RSN/XKdLCPjaYaY="
         );
         assert_eq!(len, 2);
@@ -113,7 +114,7 @@ mod tests {
         let (hash, len) = hasher.finish().unwrap();
 
         assert_eq!(
-            base64::encode(hash),
+            Base64::encode_string(&hash),
             "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
         );
         assert_eq!(len, 0);
@@ -168,7 +169,7 @@ David
         let (hash, _) = hasher.finish().unwrap();
 
         assert_eq!(
-            base64::encode(hash),
+            Base64::encode_string(&hash),
             "RMSbeRTj/zCxWeWQXpEIbiqxH0Jqg5eYs4ORzOt3MT0="
         );
     }

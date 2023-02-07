@@ -1,52 +1,58 @@
-use bstr::{BStr, ByteSlice};
-use std::fmt::{self, Debug, Formatter};
+//! Representation of email header data.
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+use bstr::{BStr, ByteSlice};
+use std::{
+    hash::{Hash, Hasher},
+    fmt::{self, Debug, Formatter},
+};
+
+pub type HeaderField = (FieldName, FieldBody);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HeaderFieldError;
 
 /// A collection of header fields that can be used for DKIM processing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HeaderFields(Vec<(FieldName, FieldBody)>);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HeaderFields(Box<[HeaderField]>);
 
 impl HeaderFields {
-    pub fn new(value: impl Into<Vec<(FieldName, FieldBody)>>) -> Result<Self, HeaderFieldError> {
+    pub fn new(value: impl Into<Box<[HeaderField]>>) -> Result<Self, HeaderFieldError> {
         let value = value.into();
-        // no empty vec or vec without "From" (TODO ?)
-        if !(value.iter().any(|(name, _)| name.0.eq_ignore_ascii_case("From"))) {
+        if value.is_empty() {
             return Err(HeaderFieldError);
         }
-        // TODO...
         Ok(Self(value))
     }
 
     pub fn from_vec(value: Vec<(String, Vec<u8>)>) -> Result<Self, HeaderFieldError> {
-        let v = value.into_iter()
+        let value: Vec<_> = value
+            .into_iter()
             .map(|(name, value)| {
                 let name = FieldName::new(name)?;
                 let body = FieldBody::new(value)?;
                 Ok((name, body))
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self(v))
+            .collect::<Result<_, _>>()?;
+        Self::new(value)
     }
 }
 
-impl AsRef<[(FieldName, FieldBody)]> for HeaderFields {
-    fn as_ref(&self) -> &[(FieldName, FieldBody)] {
+impl AsRef<[HeaderField]> for HeaderFields {
+    fn as_ref(&self) -> &[HeaderField] {
         &self.0
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct FieldName(String);
+#[derive(Clone, Eq)]
+pub struct FieldName(Box<str>);
 
 impl FieldName {
-    pub fn new(value: impl Into<String>) -> Result<Self, HeaderFieldError> {
+    pub fn new(value: impl Into<Box<str>>) -> Result<Self, HeaderFieldError> {
         let value = value.into();
         if value.is_empty() {
             return Err(HeaderFieldError);
         }
-        if !(value.chars().all(|c| c.is_ascii_graphic() && !matches!(c, ':' | ';'))) {
+        if !value.chars().all(|c| c.is_ascii_graphic() && !matches!(c, ':' | ';')) {
             return Err(HeaderFieldError);
         }
         Ok(Self(value))
@@ -65,11 +71,29 @@ impl Debug for FieldName {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct FieldBody(Vec<u8>);
+impl PartialEq for FieldName {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(&other.0)
+    }
+}
+
+impl PartialEq<&str> for FieldName {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.eq_ignore_ascii_case(other)
+    }
+}
+
+impl Hash for FieldName {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.to_ascii_lowercase().hash(state);
+    }
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+pub struct FieldBody(Box<[u8]>);
 
 impl FieldBody {
-    pub fn new(value: impl Into<Vec<u8>>) -> Result<Self, HeaderFieldError> {
+    pub fn new(value: impl Into<Box<[u8]>>) -> Result<Self, HeaderFieldError> {
         let value = value.into();
         // only folded continuation lines:
         if !(value.split_str("\r\n").skip(1).all(|line| line.starts_with(b" ") || line.starts_with(b"\t"))) {
@@ -116,21 +140,28 @@ mod tests {
 
     #[test]
     fn field_body_ok() {
-        assert!(FieldBody::new(b" ab\r\n\tcd ".to_vec()).is_ok());
-        assert!(FieldBody::new(b"\r\n\ta".to_vec()).is_ok());
-        assert!(FieldBody::new(b"  ".to_vec()).is_ok());
+        assert!(FieldBody::new(*b" ab\r\n\tcd ").is_ok());
+        assert!(FieldBody::new(*b"\r\n\ta").is_ok());
+        assert!(FieldBody::new(*b"  ").is_ok());
 
-        assert!(FieldBody::new(b" \r\na".to_vec()).is_err());
-        assert!(FieldBody::new(b" \r\n \r\n a".to_vec()).is_err());
-        assert!(FieldBody::new(b" \na".to_vec()).is_err());
-        assert!(FieldBody::new(b" abc\r\n".to_vec()).is_err());
+        assert!(FieldBody::new(*b" \r\na").is_err());
+        assert!(FieldBody::new(*b" \r\n \r\n a").is_err());
+        assert!(FieldBody::new(*b" \na").is_err());
+        assert!(FieldBody::new(*b" abc\r\n").is_err());
     }
 
     #[test]
     fn header_fields_ok() {
-        assert!(HeaderFields::new(vec![
-            (FieldName::new("From").unwrap(), FieldBody::new(b" me".to_vec()).unwrap()),
-            (FieldName::new("To").unwrap(), FieldBody::new(b" you (yes,\r\n\t you!)".to_vec()).unwrap()),
-        ]).is_ok());
+        assert!(HeaderFields::new([
+            (
+                FieldName::new("From").unwrap(),
+                FieldBody::new(*b" me").unwrap()
+            ),
+            (
+                FieldName::new("To").unwrap(),
+                FieldBody::new(*b" you (yes,\r\n\t you!)").unwrap()
+            ),
+        ])
+        .is_ok());
     }
 }

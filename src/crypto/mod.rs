@@ -54,17 +54,17 @@ mod rsa;
 pub use self::{
     ed25519::{
         /*read_ed25519_private_key, read_ed25519_private_key_file,*/ sign_ed25519,
-        verify_signature_ed25519,
+        verify_ed25519, read_ed25519_public_key
     },
     hash::{CountingHasher, HashStatus, InsufficientInput},
-    rsa::{/*read_rsa_private_key, read_rsa_private_key_file,*/ sign_rsa, verify_signature_rsa},
+    rsa::{/*read_rsa_private_key, read_rsa_private_key_file,*/ sign_rsa, verify_rsa, read_rsa_public_key},
 };
 // TODO
 pub(crate) use hash::data_hash_digest;
 
-use crate::util::ToStr;
-use ::rsa::RsaPrivateKey;
-use ed25519_dalek::Keypair as Ed25519Keypair;
+use crate::util::CanonicalStr;
+use ::rsa::{RsaPublicKey, RsaPrivateKey};
+use ed25519_dalek::{Keypair as Ed25519Keypair, PublicKey as Ed25519PublicKey};
 use pkcs8::{der::pem::PemLabel, Document, PrivateKeyInfo};
 use std::{
     fmt::{self, Display, Formatter},
@@ -107,14 +107,46 @@ impl SigningKey {
     }
 }
 
+#[derive(Debug)]
+pub enum VerifyingKey {
+    Rsa(RsaPublicKey),
+    Ed25519(Ed25519PublicKey),
+}
+
+impl VerifyingKey {
+    pub fn key_size(&self) -> Option<usize> {
+        match self {
+            Self::Rsa(public_key) => Some(self::rsa::get_public_key_size(public_key)),
+            Self::Ed25519(_) => None,
+        }
+    }
+
+    // TODO
+    pub fn from_key_data(
+        key_type: KeyType,
+        key_data: &[u8],
+    ) -> Result<Self, VerificationError> {
+        match key_type {
+            KeyType::Rsa => {
+                let rsa_public_key = read_rsa_public_key(key_data)?;
+                Ok(VerifyingKey::Rsa(rsa_public_key))
+            }
+            KeyType::Ed25519 => {
+                let ed25519_public_key = read_ed25519_public_key(key_data)?;
+                Ok(VerifyingKey::Ed25519(ed25519_public_key))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyType {
     Rsa,
     Ed25519,
 }
 
-impl ToStr for KeyType {
-    fn to_str(&self) -> &'static str {
+impl CanonicalStr for KeyType {
+    fn canonical_str(&self) -> &'static str {
         match self {
             Self::Rsa => "rsa",
             Self::Ed25519 => "ed25519",
@@ -127,8 +159,8 @@ pub enum HashAlgorithm {
     Sha256,
 }
 
-impl ToStr for HashAlgorithm {
-    fn to_str(&self) -> &'static str {
+impl CanonicalStr for HashAlgorithm {
+    fn canonical_str(&self) -> &'static str {
         match self {
             Self::Sha256 => "sha256",
         }

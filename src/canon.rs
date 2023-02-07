@@ -1,3 +1,5 @@
+//! Canonicalization utilities.
+
 use crate::{
     header::{FieldName, HeaderFields, FieldBody},
     signature::CanonicalizationAlgorithm,
@@ -275,10 +277,10 @@ pub fn canon_headers(
             .enumerate()
             .filter(|(i, _)| !processed_indexes.contains(i))
         {
-            let name = name.as_ref();
             let val = val.as_ref();
 
-            if name.eq_ignore_ascii_case(selected_header.as_ref()) {
+            if name == selected_header {
+                let name = name.as_ref();
                 match canon_alg {
                     CanonicalizationAlgorithm::Simple => {
                         result.extend(name.bytes());

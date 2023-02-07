@@ -2,7 +2,11 @@
 
 <br>
 
+🚧
+
 ***experimental, in development***
+
+🏗
 
 <br>
 
@@ -15,19 +19,26 @@ It is an asynchronous library based on the Tokio async runtime.
 
 TODO API is experimental, in initial development
 
-The API is being designed with the goal that not the whole message to be
-signed/verified must be in memory at once. Instead, messages can be processed in
-chunks, and if the necessary amount of chunks has been received can shortcut to
-finalisation.
+In terms of API, the main goals of viadkim are: efficiency, resilience with
+regard to inputs, and RFC conformance.
 
-When handling inputs, viadkim is lenient with regard to encoding errors in
-inputs. For example, stray Latin 1 bytes in headers pose no problem for this
-library, they are handled transparently as byte strings.
+Efficiency means, for example, doing DNS requests concurrently. Or, for example,
+message data can be processed in chunks, and if the necessary amount of chunks
+has been received can shortcut to finalisation, without the whole message being
+in memory at once. Or, for example, body canonicalisation is done only once even
+if multiple signatures request the same canonicalisation.
 
-The supported signature algorithms, for both signing and verifying, are
-`rsa-sha256` and `ed25519-sha256`. The historic signature algorithm `rsa-sha1`
-is not supported, and similarly RSA key sizes below 1024 bits are not supported
-(see [RFC 8301]).
+As for resilience when handling inputs, this means, for example, that viadkim is
+lenient with regard to encoding errors in inputs: stray Latin 1 bytes in headers
+pose no problem for this library, they are handled transparently as byte
+strings. Or, for example, internationalised email is supported and such inputs
+are again handled in the correct manner.
+
+Finally, the meaning of RFC conformance requires no explanation. It does mean,
+for example, that the supported signature algorithms, for both signing and
+verifying, include only `rsa-sha256` and `ed25519-sha256`. The historic
+signature algorithm `rsa-sha1` is not supported, and similarly RSA key sizes
+below 1024 bits are not supported (see [RFC 8301]).
 
 [RFC 6376]: https://www.rfc-editor.org/rfc/rfc6376
 [RFC 8301]: https://www.rfc-editor.org/rfc/rfc8301

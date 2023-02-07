@@ -29,11 +29,7 @@ pub fn keypair_bytes_to_keypair(kpb: KeypairBytes) -> Ed25519Keypair {
     Ed25519Keypair { secret, public }
 }
 
-pub fn verify_signature_ed25519(
-    key_data: &[u8],
-    msg: &[u8],
-    signature_data: &[u8],
-) -> Result<(), VerificationError> {
+pub fn read_ed25519_public_key(key_data: &[u8]) -> Result<Ed25519PublicKey, VerificationError> {
     let public_key = match Ed25519PublicKey::from_bytes(key_data) {
         Ok(pk) => pk,
         Err(_) => {
@@ -43,6 +39,14 @@ pub fn verify_signature_ed25519(
         }
     };
 
+    Ok(public_key)
+}
+
+pub fn verify_ed25519(
+    public_key: &Ed25519PublicKey,
+    msg: &[u8],
+    signature_data: &[u8],
+) -> Result<(), VerificationError> {
     let signature = Ed25519Signature::try_from(signature_data)
         .map_err(|_| VerificationError::InvalidSignature)?;
 

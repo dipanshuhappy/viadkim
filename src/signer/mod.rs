@@ -1,3 +1,5 @@
+//! Signer and supporting types.
+
 mod key_store;
 
 pub use key_store::{KeyId, KeyStore};
@@ -36,7 +38,8 @@ pub struct SigningRequest {
     pub key_type: KeyType,
     pub hash_alg: HashAlgorithm,
     pub canonicalization: Canonicalization,
-    pub signed_headers: Vec<FieldName>,  // + oversigned headers; handle multiply occurring names
+    pub signed_headers: Vec<FieldName>,  // treated as a set
+    pub oversigned_headers: Vec<FieldName>,  // treated as a set
     pub domain: DomainName,
     pub user_id: Ident,
     pub selector: Selector,
@@ -64,11 +67,13 @@ impl SigningRequest {
     ) -> Self {
         let user_id = Ident::from_domain(domain.clone());
         let signed_headers = signature::get_default_signed_headers();
+        let oversigned_headers = vec![];
         Self {
             key_type,
             hash_alg: HashAlgorithm::Sha256,
             canonicalization: Default::default(),
             signed_headers,
+            oversigned_headers,
             domain,
             user_id,
             selector,
@@ -110,7 +115,7 @@ pub struct SigningResult {
 #[derive(Debug, PartialEq)]
 pub enum SigningStatus {
     Success {
-        signature: DkimSignature,
+        signature: Box<DkimSignature>,
         header_name: String,
         header_value: String,
     },
@@ -139,7 +144,7 @@ impl Signer {
         if !headers
             .as_ref()
             .iter()
-            .any(|(name, _)| name.as_ref().eq_ignore_ascii_case("From"))
+            .any(|(name, _)| *name == "From")
         {
             return Err(SignerError::MissingFromHeader);
         }
@@ -242,8 +247,11 @@ impl Signer {
             };
 
             // TODO
-            let signed_headers =
-                signature::select_signed_headers(&task.request.signed_headers, &[], &self.headers);
+            let signed_headers = signature::select_signed_headers(
+                &task.request.signed_headers,
+                &task.request.oversigned_headers,
+                &self.headers,
+            );
 
             let header_canonicalization = task.request.canonicalization.header;
 
@@ -284,7 +292,7 @@ impl Signer {
                 body_hash,
                 canonicalization: task.request.canonicalization,
                 domain: task.request.domain.clone(),
-                signed_headers,
+                signed_headers: signed_headers.into(),
                 user_id: task.request.user_id.clone(),
                 selector: task.request.selector,
                 body_length,
@@ -329,7 +337,7 @@ impl Signer {
 
             result.push(SigningResult {
                 status: SigningStatus::Success {
-                    signature: sig,
+                    signature: Box::new(sig),
                     header_name: hdr_name.into(),
                     header_value: formatted_header,
                 },

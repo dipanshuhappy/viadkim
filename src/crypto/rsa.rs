@@ -20,12 +20,7 @@ pub fn get_public_key_size(k: &RsaPublicKey) -> usize {
     k.size() * 8
 }
 
-pub fn verify_signature_rsa(
-    hash_alg: HashAlgorithm,
-    key_data: &[u8],
-    msg: &[u8],
-    signature_data: &[u8],
-) -> Result<(), VerificationError> {
+pub fn read_rsa_public_key(key_data: &[u8]) -> Result<RsaPublicKey, VerificationError> {
     // first try reading data as SubjectPublicKeyInfo
     // (*de facto* procedure, as shown in examples in appendix of RFC)
     // then try reading data as RSAPublicKey
@@ -38,6 +33,15 @@ pub fn verify_signature_rsa(
         return Err(VerificationError::InsufficientKeySize);
     }
 
+    Ok(public_key)
+}
+
+pub fn verify_rsa(
+    hash_alg: HashAlgorithm,
+    public_key: &RsaPublicKey,
+    msg: &[u8],
+    signature_data: &[u8],
+) -> Result<(), VerificationError> {
     let result = match hash_alg {
         HashAlgorithm::Sha256 => public_key.verify(
             PaddingScheme::new_pkcs1v15_sign::<Sha256>(),

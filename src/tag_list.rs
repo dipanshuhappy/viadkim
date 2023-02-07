@@ -4,6 +4,7 @@ use crate::{
     parse::{strip_fws, strip_suffix},
 };
 use std::{collections::HashSet, str};
+use base64ct::{Base64, Encoding};
 
 pub fn parse_colon_separated_tag_value(value: &str) -> Vec<&str> {
     // note: value already well-formed:
@@ -31,7 +32,7 @@ pub fn parse_qp_section_tag_value(value: &str) -> Result<Vec<u8>, TagListParseEr
 
 pub fn parse_base64_tag_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
     let value = trim_base64_tag_value(value);
-    base64::decode(value).map_err(|_| TagListParseError::Syntax)
+    Base64::decode_vec(&value).map_err(|_| TagListParseError::Syntax)
 }
 
 pub fn trim_base64_tag_value(value: &str) -> String {
@@ -41,7 +42,7 @@ pub fn trim_base64_tag_value(value: &str) -> String {
         .collect()
 }
 
-pub fn parse_dqp_header_field(value: &str) -> Result<(FieldName, Vec<u8>), TagListParseError> {
+pub fn parse_dqp_header_field(value: &str) -> Result<(FieldName, Box<[u8]>), TagListParseError> {
     // (?) enforce well-formedness requirement for header field names, but not
     // for the dqp-encoded value, which can be anything
 
@@ -239,7 +240,7 @@ mod tests {
             result,
             Ok((
                 FieldName::new("Date").unwrap(),
-                b" July 5,\r\n\t2005 3:44:08 PM -0700".to_vec()
+                Box::from(*b" July 5,\r\n\t2005 3:44:08 PM -0700"),
             ))
         );
     }

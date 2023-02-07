@@ -3,7 +3,7 @@ use viadkim::{HeaderFields, Verifier};
 
 // TODO
 #[tokio::test]
-#[ignore = "live"]
+#[ignore = "TODO"]
 async fn basic_verify() {
     let _ = tracing_subscriber::fmt::try_init();
 

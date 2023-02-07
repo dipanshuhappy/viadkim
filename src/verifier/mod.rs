@@ -1,3 +1,5 @@
+//! Verifier and supporting types.
+
 mod lookup;
 
 pub use lookup::LookupTxt;
@@ -6,15 +8,17 @@ use crate::{
     canon::{self, BodyCanonStatus, BodyCanonicalizer},
     crypto::{
         self, CountingHasher, HashAlgorithm, HashStatus, InsufficientInput, KeyType,
-        VerificationError,
+        VerificationError, VerifyingKey,
     },
     header::HeaderFields,
     parse::strip_fws,
-    record::{DkimKeyRecord, ServiceType},
+    record::{DkimKeyRecord, Flags, ServiceType},
     signature::{
-        self, CanonicalizationAlgorithm, DkimSignature, DkimSignatureError, DkimSignatureParseError,
+        self, CanonicalizationAlgorithm, DkimSignature, DkimSignatureError, DkimSignatureErrorKind,
+        DomainName, Ident,
     },
 };
+use base64ct::{Base64, Encoding};
 use std::{
     io,
     str::{self, FromStr},
@@ -41,7 +45,8 @@ pub struct VerificationResult {
     pub index: usize,  // index in HeaderFields
     pub signature: Option<DkimSignature>,
     pub status: VerificationStatus,
-    // TODO testing: bool,  // if testing=true, treat the result as not decisive
+    pub testing: bool,  // t=y in record
+    pub key_size: Option<usize>,
 }
 
 // TODO RFC 6376 vs RFC 8601:
@@ -55,9 +60,11 @@ pub enum VerificationStatus {
 #[derive(Debug, PartialEq)]
 pub enum VerifierError {
     DkimSignatureHeaderFormat(DkimSignatureError),
+    WrongKeyType,
     KeyRecordSyntax,
     DisallowedHashAlgorithm,
     DisallowedServiceType,
+    DomainMismatch,
     VerificationFailure(VerificationError),
     BodyHashMismatch,
     InsufficientBodyLength,
@@ -70,20 +77,24 @@ struct SigTask {
     sig: Option<DkimSignature>,
     body_hasher: Option<CountingHasher>,
     status: VerificationStatus,
+    testing: bool,
+    key_size: Option<usize>,
 }
 
 struct VerifyingTask {
     index: usize,
 
     sig: Option<DkimSignature>,
-    name: Option<String>,
-    value: Option<String>,
+    name: Option<Box<str>>,
+    value: Option<Box<str>>,
 
-    lookup_task: Option<JoinHandle<io::Result<Vec<String>>>>,
+    lookup_task: Option<JoinHandle<io::Result<Vec<Box<str>>>>>,
 
-    data_hash: Option<Vec<u8>>,
+    data_hash: Option<Box<[u8]>>,
 
     status: Option<VerificationStatus>,
+    testing: bool,
+    key_size: Option<usize>,
 }
 
 impl VerifyingTask {
@@ -97,10 +108,12 @@ impl VerifyingTask {
             lookup_task: None,
             data_hash: None,
             status: Some(status),
+            testing: false,
+            key_size: None,
         }
     }
 
-    fn new(index: usize, sig: DkimSignature, name: String, value: String) -> Self {
+    fn new(index: usize, sig: DkimSignature, name: Box<str>, value: Box<str>) -> Self {
         Self {
             index,
             sig: Some(sig),
@@ -109,37 +122,13 @@ impl VerifyingTask {
             lookup_task: None,
             data_hash: None,
             status: None,
+            testing: false,
+            key_size: None,
         }
     }
 }
 
 // TODO make inherent methods
-
-fn compute_data_hash(task: &mut VerifyingTask, headers: &HeaderFields) {
-    if let Some(sig) = &mut task.sig {
-        let headers = canon::canon_headers(
-            sig.canonicalization.header,
-            headers,
-            sig.signed_headers.as_slice(),
-        );
-
-        //trace!("canonicalized headers: {:?}", BStr::new(&headers));
-
-        let original_canon_header = make_original_canon_header(
-            task.name.as_ref().unwrap(),
-            task.value.as_ref().unwrap(),
-            sig.canonicalization.header,
-        );
-
-        let data_hash = crypto::data_hash_digest(
-            sig.algorithm.to_hash_algorithm(),
-            &headers,
-            &original_canon_header,
-        );
-
-        task.data_hash = Some(data_hash);
-    }
-}
 
 fn spawn_lookup_task<T>(
     task: &mut VerifyingTask,
@@ -173,7 +162,7 @@ async fn look_up_records<T: LookupTxt + ?Sized>(
     resolver: &T,
     domain: &str,
     selector: &str,
-) -> io::Result<Vec<String>> {
+) -> io::Result<Vec<Box<str>>> {
     let dname = format!("{selector}._domainkey.{domain}.");
 
     let mut result = vec![];
@@ -184,12 +173,39 @@ async fn look_up_records<T: LookupTxt + ?Sized>(
     // at most three keys.
     for v in resolver.lookup_txt(&dname).await?.into_iter().take(3) {
         // TODO check if error is io::ErrorKind::NotFound here => should map to VerifierError::NoKeyFound!
+        // TODO also error should not be propagated with ? here?
         let s = v?;
         let s = String::from_utf8_lossy(&s);
-        result.push(s.into_owned());
+        result.push(s.into());
     }
 
     Ok(result)
+}
+
+fn compute_data_hash(task: &mut VerifyingTask, headers: &HeaderFields) {
+    if let Some(sig) = &mut task.sig {
+        let headers = canon::canon_headers(
+            sig.canonicalization.header,
+            headers,
+            &sig.signed_headers,
+        );
+
+        //trace!("canonicalized headers: {:?}", BStr::new(&headers));
+
+        let original_canon_header = make_original_canon_header(
+            task.name.as_ref().unwrap(),
+            task.value.as_ref().unwrap(),
+            sig.canonicalization.header,
+        );
+
+        let data_hash = crypto::data_hash_digest(
+            sig.algorithm.to_hash_algorithm(),
+            &headers,
+            &original_canon_header,
+        );
+
+        task.data_hash = Some(data_hash);
+    }
 }
 
 async fn verify_sig(task: &mut VerifyingTask) {
@@ -225,12 +241,41 @@ async fn verify_sig(task: &mut VerifyingTask) {
         for (i, key_record) in txts.into_iter().enumerate() {
             trace!("trying verification using DKIM key record {}", i + 1);
 
-            match verify_signature_with_record(
-                key_type,
+            let key_record = match get_validated_key_record(
+                key_type, hash_alg, &key_record, &sig.domain, &sig.user_id,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    // record last error seen
+                    task.status = Some(VerificationStatus::Failure(e));
+                    task.testing = false;  // unknown
+                    task.key_size = None;
+                    continue;
+                }
+            };
+
+            let testing = key_record.flags.contains(&Flags::Testing);
+            let key_data = key_record.key_data;
+
+            let public_key = match VerifyingKey::from_key_data(key_type, &key_data) {
+                Ok(k) => k,
+                Err(e) => {
+                    // record last error seen
+                    task.status = Some(VerificationStatus::Failure(VerifierError::VerificationFailure(e)));
+                    task.testing = false;  // unknown
+                    task.key_size = None;
+                    continue;
+                }
+            };
+
+            task.testing = testing;
+            task.key_size = public_key.key_size();
+
+            match verify_signature(
+                &public_key,
                 hash_alg,
                 data_hash,
                 signature_data,
-                &key_record,
             ) {
                 Ok(()) => {
                     task.status = Some(VerificationStatus::Success);
@@ -245,29 +290,26 @@ async fn verify_sig(task: &mut VerifyingTask) {
     }
 }
 
-fn verify_signature_with_record(
+fn get_validated_key_record(
     key_type: KeyType,
     hash_alg: HashAlgorithm,
-    data_hash: &[u8],
-    signature_data: &[u8],
     key_record: &str,
-) -> Result<(), VerifierError> {
-    // let tag_list = match TagList::from_str(key_record) {
-    //     Ok(r) => r,
-    //     Err(_e) => {
-    //         trace!("invalid key record syntax");
-    //         return Err(VerifierError::KeyRecordSyntax);
-    //     }
-    // };
-
+    domain: &DomainName,
+    user_id: &Ident,
+) -> Result<DkimKeyRecord, VerifierError> {
     let rec = match DkimKeyRecord::from_str(key_record) {
         Ok(r) => r,
         Err(_e) => {
+            // TODO doesn't have to be a syntax error, eg revoked key
             trace!("invalid key record syntax");
             return Err(VerifierError::KeyRecordSyntax);
         }
     };
 
+    if rec.key_type != key_type {
+        trace!("wrong public key type");
+        return Err(VerifierError::WrongKeyType);
+    }
     if !rec.hash_algorithms.contains(&hash_alg) {
         trace!("disallowed hash algorithm");
         return Err(VerifierError::DisallowedHashAlgorithm);
@@ -278,11 +320,26 @@ fn verify_signature_with_record(
         trace!("disallowed service type");
         return Err(VerifierError::DisallowedServiceType);
     }
-    // ...
+    if rec.flags.contains(&Flags::NoSubdomains) {
+        // assumes that parsing already validated that i= domain is subdomain of d=
+        if domain != &user_id.domain_part {
+            trace!("domain mismatch");
+            return Err(VerifierError::DomainMismatch);
+        }
+    }
 
-    match key_type {
-        KeyType::Rsa => {
-            match crypto::verify_signature_rsa(hash_alg, &rec.key_data, data_hash, signature_data) {
+    Ok(rec)
+}
+
+fn verify_signature(
+    public_key: &VerifyingKey,
+    hash_alg: HashAlgorithm,
+    data_hash: &[u8],
+    signature_data: &[u8],
+) -> Result<(), VerifierError> {
+    match public_key {
+        VerifyingKey::Rsa(pk) => {
+            match crypto::verify_rsa(hash_alg, pk, data_hash, signature_data) {
                 Ok(()) => {
                     trace!("RSA public key verification successful");
                     Ok(())
@@ -293,8 +350,8 @@ fn verify_signature_with_record(
                 }
             }
         }
-        KeyType::Ed25519 => {
-            match crypto::verify_signature_ed25519(&rec.key_data, data_hash, signature_data) {
+        VerifyingKey::Ed25519(pk) => {
+            match crypto::verify_ed25519(pk, data_hash, signature_data) {
                 Ok(()) => {
                     trace!("Ed25519 public key verification successful");
                     Ok(())
@@ -356,6 +413,8 @@ impl Verifier {
                 sig: task.sig,
                 body_hasher,
                 status: task.status.unwrap(),
+                testing: task.testing,
+                key_size: task.key_size,
             });
         }
 
@@ -413,6 +472,8 @@ impl Verifier {
                         index: task.index,
                         signature: task.sig,
                         status: VerificationStatus::Failure(e),
+                        testing: task.testing,
+                        key_size: task.key_size,
                     });
                 }
                 VerificationStatus::Success => {
@@ -432,7 +493,7 @@ impl Verifier {
                         Ok((h, _)) => {
                             if h != task.sig.as_ref().unwrap().body_hash.as_ref() {
                                 // downgrade status Success -> Failure!
-                                trace!("body hash mismatch: {}", &base64::encode(h));
+                                trace!("body hash mismatch: {}", &Base64::encode_string(&h));
                                 VerificationStatus::Failure(VerifierError::BodyHashMismatch)
                             } else {
                                 trace!("body hash matched");
@@ -449,6 +510,8 @@ impl Verifier {
                         index: task.index,
                         signature: Some(task.sig.unwrap()),
                         status,
+                        testing: task.testing,
+                        key_size: task.key_size,
                     });
                 }
             }
@@ -466,7 +529,7 @@ fn find_dkim_signatures(headers: &HeaderFields) -> Vec<VerifyingTask> {
         .as_ref()
         .iter()
         .enumerate()
-        .filter(|(_, (name, _))| name.as_ref().eq_ignore_ascii_case("DKIM-Signature"))
+        .filter(|(_, (name, _))| *name == "DKIM-Signature")
         .take(20);  // hard limit
 
     for (idx, (name, value)) in dkim_headers {
@@ -481,7 +544,7 @@ fn find_dkim_signatures(headers: &HeaderFields) -> Vec<VerifyingTask> {
                     DkimSignatureError {
                         domain: None,
                         signature_data_base64: None,
-                        cause: DkimSignatureParseError::InvalidTagList,
+                        kind: DkimSignatureErrorKind::InvalidTagList,
                     },
                 ));
                 continue;

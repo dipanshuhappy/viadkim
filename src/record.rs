@@ -1,3 +1,5 @@
+//! DKIM public key record.
+
 use crate::{
     crypto::{HashAlgorithm, KeyType},
     tag_list::{
@@ -11,14 +13,14 @@ use std::str::FromStr;
 pub enum ServiceType {
     Any,
     Email,
-    Other(String),
+    Other(Box<str>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Flags {
     Testing,
     NoSubdomains,
-    Other(String),
+    Other(Box<str>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -37,12 +39,12 @@ pub enum DkimKeyRecordParseError {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct DkimKeyRecord {
-    pub hash_algorithms: Vec<HashAlgorithm>,  // non-empty
+    pub hash_algorithms: Box<[HashAlgorithm]>,  // non-empty
     pub key_type: KeyType,
-    pub notes: Option<String>,
+    pub notes: Option<Box<str>>,
     pub key_data: Box<[u8]>,
-    pub service_types: Vec<ServiceType>,  // non-empty
-    pub flags: Vec<Flags>,
+    pub service_types: Box<[ServiceType]>,  // non-empty
+    pub flags: Box<[Flags]>,
 }
 
 impl FromStr for DkimKeyRecord {
@@ -101,8 +103,8 @@ impl DkimKeyRecord {
                     let v = parse_qp_section_tag_value(value)
                         .map_err(|_| DkimKeyRecordParseError::ValueSyntax)?;
                     // only UTF-8 supported:
-                    let val = String::from_utf8_lossy(&v).into_owned();
-                    notes = Some(val);
+                    let val = String::from_utf8_lossy(&v);
+                    notes = Some(val.into());
                 }
                 "p" => {
                     if value.is_empty() {
@@ -148,12 +150,12 @@ impl DkimKeyRecord {
         let key_data = key_data.ok_or(DkimKeyRecordParseError::MissingKeyTag)?;
 
         Ok(Self {
-            hash_algorithms,
+            hash_algorithms: hash_algorithms.into(),
             key_type,
             notes,
             key_data,
-            service_types,
-            flags,
+            service_types: service_types.into(),
+            flags: flags.into(),
         })
     }
 }
@@ -172,12 +174,12 @@ mod tests {
         assert_eq!(
             dkim_key_record,
             DkimKeyRecord {
-                hash_algorithms: vec![HashAlgorithm::Sha256],
+                hash_algorithms: [HashAlgorithm::Sha256].into(),
                 key_type: KeyType::Rsa,
                 notes: Some("highly interesting".into()),
                 key_data: b"abc".to_vec().into(),
-                service_types: vec![ServiceType::Email],
-                flags: vec![],
+                service_types: [ServiceType::Email].into(),
+                flags: [].into(),
             }
         );
     }
