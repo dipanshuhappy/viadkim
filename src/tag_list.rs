@@ -116,12 +116,6 @@ impl<'a> AsRef<[TagSpec<'a>]> for TagList<'a> {
 
 impl<'a> TagList<'a> {
     pub fn from_str(val: &'a str) -> Result<Self, TagListParseError> {
-        // input must already be CRLF, no stray CR or LF
-        debug_assert!(
-            val.split("\r\n").all(|s| !s.contains(['\r', '\n'])),
-            "isolated CR or LF"
-        );
-
         match parse_tag_list_internal(val) {
             Some((rest, tag_list)) if rest.is_empty() => {
                 // ensure no duplicate names
