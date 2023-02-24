@@ -25,8 +25,8 @@ pub enum Flags {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DkimKeyRecordParseError {
+    RecordSyntax,  // fundamental syntax errors such as DNS record format or invalid UTF-8 data
     TagListSyntax,
-
     UnsupportedVersion,
     MisplacedVersionTag,
     UnsupportedKeyType,
@@ -182,5 +182,15 @@ mod tests {
                 flags: [].into(),
             }
         );
+    }
+
+    #[test]
+    fn dkim_key_record_from_str_broken() {
+        // This is an actual record from mail._domainkey.circleshop.ch. Note
+        // OpenDKIM accepts this record even though it is ill-formed (uses LF
+        // instead of CRLF in FWS).
+        let s = "v=DKIM1; h=sha256; k=rsa; \n\t  p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxjVprCb0VDFsrDawxGnwI6OoMUXIc7MKm6354dN9sDDxKi4w3jLQZhiMGHrc/j1JqxWX0CA6lGKfJxlmoLahSD3o92hBkG0b4b2B3erza26gzbKEkKr223WAhxNTfPllECF2HBXPp5tuvMVCQXGJ9uEi9WkgmD4Ns8Va9SLMOg9UKD/vbzE CGuf6jNCVhngzXTVli2vIL/OTE7\n\t  ZWOuXnRENt01sv/aiAQC4PFOMKs1ZVkpcgOQMIZO/5PrMKU/bjUx/9uaaIDLkLJ0RBFgkSJ2uXWtrm6kP7lI8H/7zGunbiDoLiEoAUU7PT98VR4TXvU0DDItzHVoiF/CZsLKwSvQIDAQAB";
+
+        assert!(DkimKeyRecord::from_str(s).is_err());
     }
 }

@@ -277,22 +277,8 @@ pub fn canon_headers(
             .enumerate()
             .filter(|(i, _)| !processed_indexes.contains(i))
         {
-            let val = val.as_ref();
-
             if name == selected_header {
-                let name = name.as_ref();
-                match canon_alg {
-                    CanonicalizationAlgorithm::Simple => {
-                        result.extend(name.bytes());
-                        result.push(b':');
-                        result.extend(val);
-                    }
-                    CanonicalizationAlgorithm::Relaxed => {
-                        result.extend(name.to_ascii_lowercase().bytes());
-                        result.push(b':');
-                        canon_header_relaxed(&mut result, val);
-                    }
-                }
+                canon_header(&mut result, canon_alg, name, val);
 
                 result.extend(CRLF);
 
@@ -306,7 +292,30 @@ pub fn canon_headers(
     result
 }
 
-pub fn canon_header_relaxed(canon_headers: &mut Vec<u8>, value: &[u8]) {
+pub fn canon_header(
+    result: &mut Vec<u8>,
+    canon_alg: CanonicalizationAlgorithm,
+    name: impl AsRef<str>,
+    val: impl AsRef<[u8]>,
+) {
+    let name = name.as_ref();
+    let val = val.as_ref();
+
+    match canon_alg {
+        CanonicalizationAlgorithm::Simple => {
+            result.extend(name.bytes());
+            result.push(b':');
+            result.extend(val);
+        }
+        CanonicalizationAlgorithm::Relaxed => {
+            result.extend(name.to_ascii_lowercase().bytes());
+            result.push(b':');
+            canon_header_relaxed(result, val);
+        }
+    }
+}
+
+fn canon_header_relaxed(canon_headers: &mut Vec<u8>, value: &[u8]) {
     fn is_space(c: char) -> bool {
         matches!(c, ' ' | '\t' | '\r' | '\n')
     }

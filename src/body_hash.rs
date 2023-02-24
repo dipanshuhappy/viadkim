@@ -1,5 +1,5 @@
 use crate::{
-    canon::{BodyCanonStatus, BodyCanonicalizer},
+    canonicalize::{BodyCanonStatus, BodyCanonicalizer},
     crypto::{CountingHasher, HashAlgorithm, HashStatus, InsufficientInput},
     signature::{CanonicalizationAlgorithm, DkimSignature},
 };

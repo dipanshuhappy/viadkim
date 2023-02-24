@@ -1,9 +1,13 @@
 //! DKIM signature.
 
+mod names;
+mod format;
+
+pub use names::{DomainName, Identity, Selector};
+
 use crate::{
-    canon,
+    canonicalize,
     crypto::{HashAlgorithm, KeyType},
-    dqp,
     header::{FieldName, HeaderFields},
     tag_list::{
         self, parse_base64_tag_value, parse_colon_separated_tag_value, parse_dqp_header_field,
@@ -12,11 +16,10 @@ use crate::{
     util::CanonicalStr,
 };
 use base64ct::{Base64, Encoding};
+use bstr::ByteSlice;
 use std::{
     collections::HashSet,
-    hash::{Hash, Hasher},
-    error::Error,
-    fmt::{self, Display, Formatter, Write},
+    fmt::{self, Display, Formatter},
     str::{self, FromStr},
 };
 
@@ -176,302 +179,7 @@ impl FromStr for Canonicalization {
     }
 }
 
-// TODO all from viaspf, revise:
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParseDomainError;
-
-impl Display for ParseDomainError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "could not parse domain name")
-    }
-}
-
-impl Error for ParseDomainError {}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Ident {
-    // for i= tag:
-    // [ Local-part ] "@" domain-name
-    // email address where local-part is optional
-    pub local_part: Option<Box<str>>,
-    pub domain_part: DomainName,
-}
-
-impl Ident {
-    pub fn new(ident: &str) -> Result<Self, ParseDomainError> {
-        let (local_part, domain) = if let Some((local_part, domain)) = ident.rsplit_once('@') {
-            if local_part.is_empty() {
-                (None, domain)
-            } else {
-                if !is_local_part(local_part) {
-                    return Err(ParseDomainError);
-                }
-                (Some(local_part.into()), domain)
-            }
-        } else {
-            return Err(ParseDomainError);
-        };
-
-        DomainName::new(domain).map(|domain_part| Self {
-            local_part,
-            domain_part,
-        })
-    }
-
-    pub fn from_domain(domain_part: DomainName) -> Self {
-        Self {
-            local_part: None,
-            domain_part,
-        }
-    }
-}
-
-// ‘local-part’ is defined in RFC 5321, §4.1.2. Modifications for
-// internationalisation are in RFC 6531, §3.3.
-fn is_local_part(s: &str) -> bool {
-    // See RFC 5321, §4.5.3.1.1.
-    if s.len() > 64 {
-        return false;
-    }
-
-    if s.starts_with('"') {
-        is_quoted_string(s)
-    } else {
-        is_dot_string(s)
-    }
-}
-
-fn is_quoted_string(s: &str) -> bool {
-    fn is_qtext_smtp(c: char) -> bool {
-        c == ' ' || c.is_ascii_graphic() && !matches!(c, '"' | '\\') || !c.is_ascii()
-    }
-
-    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-        let mut quoted = false;
-        for c in s[1..(s.len() - 1)].chars() {
-            if quoted {
-                if c == ' ' || c.is_ascii_graphic() {
-                    quoted = false;
-                } else {
-                    return false;
-                }
-            } else if c == '\\' {
-                quoted = true;
-            } else if !is_qtext_smtp(c) {
-                return false;
-            }
-        }
-        !quoted
-    } else {
-        false
-    }
-}
-
-fn is_dot_string(s: &str) -> bool {
-    // See RFC 5322, §3.2.3, with the modifications in RFC 6531, §3.3.
-    fn is_atext(c: char) -> bool {
-        c.is_ascii_alphanumeric()
-            || matches!(
-                c,
-                '!' | '#' | '$' | '%' | '&' | '\'' | '*' | '+' | '-' | '/' | '=' | '?' | '^' | '_'
-                | '`' | '{' | '|' | '}' | '~'
-            )
-            || !c.is_ascii()
-    }
-
-    let mut dot = true;
-    for c in s.chars() {
-        if dot {
-            if is_atext(c) {
-                dot = false;
-            } else {
-                return false;
-            }
-        } else if c == '.' {
-            dot = true;
-        } else if !is_atext(c) {
-            return false;
-        }
-    }
-    !dot
-}
-
-/// A domain name.
-///
-/// This type is used to wrap domain names as used in the d= and i= tags.
-#[derive(Clone, Eq)]
-pub struct DomainName(Box<str>);
-
-impl DomainName {
-    // TODO FromStr
-    pub fn new(s: &str) -> Result<Self, ParseDomainError> {
-        // Note format:
-        // domain-name     = sub-domain 1*("." sub-domain)
-        if s.ends_with('.') {
-            return Err(ParseDomainError);
-        }
-        // TODO Store the domain in ASCII or Unicode form? better as-is to preserve case (cosmetic)
-        // let s = idna::domain_to_ascii(s).map_err(|_| ParseDomainError)?;
-        if is_valid_dns_name(s) {
-            Ok(Self(s.into()))
-        } else {
-            Err(ParseDomainError)
-        }
-    }
-
-    // TODO support IDNA domains
-    pub fn eq_or_subdomain_of(&self, other: &DomainName) -> bool {
-        if self == other {
-            return true;
-        }
-
-        let name = &self.0;
-        let other = &other.0;
-
-        if name.len() > other.len() {
-            let len = name.len() - other.len();
-            matches!(name.get(len..), Some(s) if s.eq_ignore_ascii_case(other))
-                && matches!(name.get(..len), Some(s) if s.ends_with('.'))
-        } else {
-            false
-        }
-    }
-}
-
-impl Display for DomainName {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl fmt::Debug for DomainName {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", &self.0)
-    }
-}
-
-impl AsRef<str> for DomainName {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-// TODO support IDNA-equiv comparison
-impl PartialEq for DomainName {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.eq_ignore_ascii_case(&other.0)
-    }
-}
-
-impl Hash for DomainName {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.to_ascii_lowercase().hash(state);
-    }
-}
-
-// TODO revisit
-fn is_valid_dns_name(mut s: &str) -> bool {
-    fn is_tld(s: &str) -> bool {
-        is_label(s) && !s.chars().all(|c: char| c.is_ascii_digit())
-    }
-
-    if let Some(sx) = s.strip_suffix('.') {
-        s = sx;
-    }
-
-    // TODO no need to check this, will only be needed when <sel>._domainkey.<domain> is constructed
-    if !has_valid_domain_len(s) {
-        return false;
-    }
-
-    let mut labels = s.split('.').rev().peekable();
-
-    if matches!(labels.next(), Some(l) if !is_tld(l)) {
-        return false;
-    }
-    if labels.peek().is_none() {
-        return false;
-    }
-
-    labels.all(is_label)
-}
-
-fn is_label(s: &str) -> bool {
-    has_valid_label_len(s)
-        && s.starts_with(|c: char| c.is_ascii_alphanumeric())
-        && s.ends_with(|c: char| c.is_ascii_alphanumeric())
-        && s.chars().all(|c: char| c.is_ascii_alphanumeric() || c == '-')
-}
-
-const MAX_DOMAIN_LENGTH: usize = 253;
-
-fn has_valid_domain_len(s: &str) -> bool {
-    matches!(s.len(), 1..=MAX_DOMAIN_LENGTH)
-}
-
-fn has_valid_label_len(s: &str) -> bool {
-    matches!(s.len(), 1..=63)
-}
-
-/// A selector.
-///
-/// This type is used to wrap a sequence of labels as used in the s= tag.
-#[derive(Clone, Eq)]
-pub struct Selector(Box<str>);
-
-impl Selector {
-    // TODO error type
-    pub fn new(s: &str) -> Result<Self, &'static str> {
-        // TODO this check not necessary, will fail later:
-        if !has_valid_domain_len(s) {
-            return Err("invalid selector");
-        }
-
-        // lenient parsing domain name labels, allows things like "dkim_123"
-        if !s.split('.').all(|l| {
-            has_valid_label_len(l)
-                && !l.starts_with('-')
-                && !l.ends_with('-')
-                && l.chars().all(tag_list::is_tval_char)
-        }) {
-            return Err("invalid selector");
-        }
-
-        Ok(Selector(s.into()))
-    }
-}
-
-impl Display for Selector {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl fmt::Debug for Selector {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", &self.0)
-    }
-}
-
-impl AsRef<str> for Selector {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-// TODO support IDNA-equiv comparison
-impl PartialEq for Selector {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.eq_ignore_ascii_case(&other.0)
-    }
-}
-
-impl Hash for Selector {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.to_ascii_lowercase().hash(state);
-    }
-}
+pub const DKIM_SIGNATURE_NAME: &str = "DKIM-Signature";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DkimSignatureError {
@@ -486,7 +194,6 @@ pub struct DkimSignatureError {
 // TODO differentiate between fatal (invalid domain) and unsupported (unknown algorithm) errors
 // *for the purpose of parsing*
 // eg if whole sig can be parsed, but alg is unknown, can still return a DkimSignature (?)
-// TODO rename DkimSignatureErrorKind ?
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DkimSignatureErrorKind {
     MissingVersionTag,
@@ -511,7 +218,7 @@ pub enum DkimSignatureErrorKind {
     ValueSyntax,
     DomainMismatch,
     InvalidUserId,
-
+    ExpirationNotAfterTimestamp,
     InvalidTagList,
 }
 
@@ -556,7 +263,7 @@ impl Display for DkimSignatureErrorKind {
             Self::HistoricAlgorithm => write!(f, "historic signature algorithm"),
             Self::UnsupportedAlgorithm => write!(f, "unsupported algorithm"),
             Self::MissingAlgorithmTag => write!(f, "a= tag missing"),
-            Self::MissingSignatureTag => write!(f, "s= tag missing"),
+            Self::MissingSignatureTag => write!(f, "b= tag missing"),
             Self::MissingBodyHashTag => write!(f, "bh= tag missing"),
             Self::UnsupportedCanonicalization => write!(f, "unsupported canonicalization"),
             Self::InvalidDomain => write!(f, "invalid domain"),
@@ -573,28 +280,37 @@ impl Display for DkimSignatureErrorKind {
             Self::ValueSyntax => write!(f, "syntax error"),
             Self::DomainMismatch => write!(f, "domain mismatch"),
             Self::InvalidUserId => write!(f, "invalid user ID"),
+            Self::ExpirationNotAfterTimestamp => write!(f, "expiration not after timestamp"),
             Self::InvalidTagList => write!(f, "invalid tag-list"),
         }
     }
 }
 
+// TODO consider treating this only as an *output* type, ie don't provide methods
+// for operating on manually constructed DkimSignature (due to invariants not being guaranteed)
 /// A DKIM signature as encoded in a `DKIM-Signature` header field.
 #[derive(Clone, Eq, PartialEq)]
 pub struct DkimSignature {
     // The fields are strongly typed and have public visibility. This does allow
     // constructing an ‘invalid’ `DkimSignature` (eg with empty signature, or
     // empty signed headers) but given usage contexts this is acceptable.
+    // Notes:
+    // - i= is Option, because §3.5: "the Signer might wish to assert that
+    // although it is willing to go as far as signing for the domain, it is
+    // unable or unwilling to commit to an individual user name within the
+    // domain. It can do so by including the domain part but not the local-part
+    // of the identity."
 
     pub algorithm: SignatureAlgorithm,
     pub signature_data: Box<[u8]>,
     pub body_hash: Box<[u8]>,
     pub canonicalization: Canonicalization,
     pub domain: DomainName,
-    pub signed_headers: Box<[FieldName]>,
-    pub user_id: Ident,  // TODO Option?
+    pub signed_headers: Box<[FieldName]>,  // not empty, no fields containing ;
+    pub user_id: Option<Identity>,
     pub body_length: Option<u64>,
     pub selector: Selector,
-    pub copied_headers: Option<Box<[(FieldName, Box<[u8]>)]>>,
+    pub copied_headers: Option<Box<[(FieldName, Box<[u8]>)]>>,  // TODO Option? vec must not be empty, no fields containing ;
     pub timestamp: Option<u64>,
     pub expiration: Option<u64>,
 }
@@ -673,12 +389,12 @@ impl DkimSignature {
                 }
                 "i" => {
                     // TODO
-                    let value = Ident::new(value)
+                    let value = Identity::new(value)
                         .map_err(|_| DkimSignatureErrorKind::InvalidUserId)?;
                     user_id = Some(value);
                 }
                 "l" => {
-                    let value: u64 = value
+                    let value = value
                         .parse()
                         .map_err(|_| DkimSignatureErrorKind::InvalidBodyLength)?;
                     body_length = Some(value);
@@ -741,10 +457,16 @@ impl DkimSignature {
                 if !i_domain.eq_or_subdomain_of(&domain) {
                     return Err(DkimSignatureErrorKind::DomainMismatch);
                 }
-                i
+                Some(i)
             }
-            None => Ident::from_domain(domain.clone()),
+            None => None,
         };
+
+        if let (Some(timestamp), Some(expiration)) = (timestamp, expiration) {
+            if expiration <= timestamp {
+                return Err(DkimSignatureErrorKind::ExpirationNotAfterTimestamp);
+            }
+        }
 
         let canonicalization = canonicalization.unwrap_or_default();
 
@@ -764,66 +486,12 @@ impl DkimSignature {
         })
     }
 
-    pub(crate) fn format_without_signature(&self, width: usize) -> String {
-        let start_i = "DKIM-Signature:".len();
-
-        let mut result = String::new();
-        let mut i = start_i;
-
-        format_tag_into_string(&mut result, width, &mut i, "v", "1");
-
-        format_tag_into_string(&mut result, width, &mut i, "d", self.domain.as_ref());
-
-        format_tag_into_string(&mut result, width, &mut i, "s", self.selector.as_ref());
-
-        format_tag_into_string(&mut result, width, &mut i, "a", self.algorithm.canonical_str());
-
-        let canon = match (self.canonicalization.header, self.canonicalization.body) {
-            (CanonicalizationAlgorithm::Simple, CanonicalizationAlgorithm::Simple) => None,
-            (CanonicalizationAlgorithm::Simple, CanonicalizationAlgorithm::Relaxed) => {
-                Some("simple/relaxed")
-            }
-            (CanonicalizationAlgorithm::Relaxed, CanonicalizationAlgorithm::Simple) => {
-                Some("relaxed")
-            }
-            (CanonicalizationAlgorithm::Relaxed, CanonicalizationAlgorithm::Relaxed) => {
-                Some("relaxed/relaxed")
-            }
-        };
-        if let Some(canon) = canon {
-            format_tag_into_string(&mut result, width, &mut i, "c", canon);
-        }
-
-        if let Some(timestamp) = &self.timestamp {
-            format_tag_into_string(&mut result, width, &mut i, "t", &timestamp.to_string());
-        }
-        if let Some(expiration) = &self.expiration {
-            format_tag_into_string(&mut result, width, &mut i, "x", &expiration.to_string());
-        }
-
-        format_colon_separated_into_string(&mut result, width, &mut i, "h", &self.signed_headers[..]);
-
-        if let Some(z) = &self.copied_headers {
-            // TODO i
-            let s: Vec<_> = z.iter()
-                .map(|(k, v)| format!("{}:{}", k.as_ref(), dqp::dqp_encode(v, true)))
-                .collect();
-            result.push_str("\r\n\tz=");
-            let value = s.join("|");
-            result.push_str(&value);
-            result.push(';');
-        }
-
-        let bh = encode_binary(&self.body_hash);
-        format_base64_into_string(&mut result, width, &mut i, "bh", &bh);
-
-        if i + 4 <= width {  // at least one additional char behind =
-            result.push_str(" b=");
-        } else {
-            result.push_str("\r\n\tb=");
-        }
-
-        result
+    // Returns the formatted signature without the b= value, and the index where
+    // the b= value is to be inserted.
+    // width: *char-based* line width
+    // b_tag_len: *char-based* b= tag value length (check)
+    pub(crate) fn format_without_signature(&self, width: usize, b_tag_len: usize) -> (String, usize) {
+        format::format_without_signature(self, width, b_tag_len)
     }
 }
 
@@ -831,7 +499,20 @@ pub fn encode_binary<T: AsRef<[u8]>>(input: T) -> String {
     Base64::encode_string(input.as_ref())
 }
 
-// TODO
+// TODO Debug
+
+struct CopiedHeadersDebug<'a>(&'a [(FieldName, Box<[u8]>)]);
+
+impl fmt::Debug for CopiedHeadersDebug<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_list();
+        for (name, value) in self.0 {
+            d.entry(&(name, value.as_bstr()));
+        }
+        d.finish()
+    }
+}
+
 impl fmt::Debug for DkimSignature {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("DkimSignature")
@@ -844,7 +525,7 @@ impl fmt::Debug for DkimSignature {
             .field("user_id", &self.user_id)
             .field("body_length", &self.body_length)
             .field("selector", &self.selector)
-            .field("copied_headers", &self.copied_headers)
+            .field("copied_headers", &self.copied_headers.as_deref().map(CopiedHeadersDebug))
             .field("timestamp", &self.timestamp)
             .field("expiration", &self.expiration)
             .finish()
@@ -853,144 +534,42 @@ impl fmt::Debug for DkimSignature {
 
 pub const LINE_WIDTH: usize = 78;
 
-fn format_tag_into_string(
-    result: &mut String,
-    width: usize,
-    i: &mut usize,
-    tag: &'static str,
-    value: &str,
-) {
-    let taglen = tag.len() + value.chars().count() + 3;  // WSP + tag + '=' + val + ';'
-
-    if *i + taglen <= width {
-        result.push(' ');
-        *i += taglen;
-    } else {
-        result.push_str("\r\n\t");
-        *i = taglen;
-    }
-    write!(result, "{tag}={value};").unwrap();
-}
-
-fn format_colon_separated_into_string<I, S>(
-    result: &mut String,
-    width: usize,
-    i: &mut usize,
-    tag: &'static str,
-    value: I,
-)
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let mut iter = value.into_iter();  // not-empty!
-
-    let first_name = iter.next().unwrap();
-
-    let taglen = first_name.as_ref().chars().count() + 4;  // WSP + tag + '=' + name + ';'/':'
-    if *i + taglen <= width {
-        result.push(' ');
-        *i += taglen;
-    } else {
-        result.push_str("\r\n\t");
-        *i = taglen;
-    }
-    write!(result, "{}={}", tag, first_name.as_ref()).unwrap();  // don't write ;/: yet
-
-    for name in iter {
-        let name = name.as_ref();
-        result.push(':');
-        let elemlen = name.chars().count() + 1;  // name + ';'/':'
-        if *i + elemlen <= width {
-            *i += elemlen;
-        } else {
-            result.push_str("\r\n\t");
-            *i = elemlen + 1;
-        }
-        write!(result, "{name}").unwrap();  // don't write ;/: yet
-    }
-
-    result.push(';');
-}
-
-fn format_base64_into_string(
-    result: &mut String,
-    width: usize,
-    i: &mut usize,
-    tag: &'static str,  // "bh" "b"
-    value: &str,        // ef7AB+MIi...
-) {
-    let taglen = tag.len() + 3;  // WSP + tag + '=' + 1char
-
-    if *i + taglen <= width {  // at least one additional char behind =
-        write!(result, " {tag}=").unwrap();
-        *i += taglen - 1;
-    } else {
-        write!(result, "\r\n\t{tag}=").unwrap();
-        *i = taglen - 1;
-    }
-
-    let first_chunk_len = width.saturating_sub(*i).max(1);  //min len 1
-    let first_chunk_len = first_chunk_len.min(value.len());
-    let first_chunk = &value[..first_chunk_len];
-
-    result.push_str(first_chunk);
-    *i += first_chunk.chars().count();
-
-    let rest = &value[first_chunk_len..];
-
-    for chunk in rest.as_bytes().chunks(77) {  // for loop not entered if no chunks
-        let s = str::from_utf8(chunk).unwrap();
-        result.push_str("\r\n\t");
-        result.push_str(s);
-        *i = s.chars().count() + 1;
-    }
-    // if final chunk makes line === 78 chars long, the final ; will be appended nevertheless (=> width == 79)
-    result.push(';');
-    *i += 1;
-}
-
-pub(crate) fn push_signature_data(
+pub(crate) fn insert_signature_data(
     formatted_header: &mut String,
+    insertion_index: usize,
     signature_data: &[u8],
     line_width: usize,
 ) {
+    debug_assert!(insertion_index <= formatted_header.len());
+
     let s = encode_binary(signature_data);
     // note s contains only ASCII now
 
-    let last_line = formatted_header.rsplit("\r\n").next().unwrap_or(&formatted_header[..]);
-    let len = last_line.chars().count();
+    let formatted_header_pre = &formatted_header[..insertion_index];
 
-    let first_chunk_len = line_width.saturating_sub(len).max(1);  //min len 1
+    let mut len = match formatted_header_pre.rsplit("\r\n").next() {
+        Some(last_line) => last_line.chars().count(),
+        None => DKIM_SIGNATURE_NAME.len() + formatted_header_pre.chars().count() + 1,
+    };
 
-    let first_chunk = &s[..first_chunk_len];
+    let mut result = String::with_capacity(s.len());
+    format::format_chunks_into_string(&mut result, line_width, &mut len, &s);
 
-    formatted_header.push_str(first_chunk);
-
-    for chunk in s[first_chunk_len..].as_bytes().chunks(77) {  // for loop not entered if no chunks
-        let s = str::from_utf8(chunk).unwrap();
-        formatted_header.push_str("\r\n\t");
-        formatted_header.push_str(s);
-    }
+    formatted_header.insert_str(insertion_index, &result);
 }
 
 pub(crate) fn canon_dkim_header(
     canon: CanonicalizationAlgorithm,
-    name: &str,  // "DKIM-Signature", but with original (upper/lower) case
+    name: &str,
     formatted_hdr_without_sig: &str,
-) -> String {
-    let result = match canon {
-        CanonicalizationAlgorithm::Relaxed => {
-            let mut field_value = b"dkim-signature:".to_vec();
-            canon::canon_header_relaxed(&mut field_value, formatted_hdr_without_sig.as_bytes());
-            String::from_utf8_lossy(&field_value).into_owned()
-        }
-        CanonicalizationAlgorithm::Simple => {
-            format!("{name}:{formatted_hdr_without_sig}")
-        }
-    };
+) -> Vec<u8> {
+    debug_assert!(name.eq_ignore_ascii_case(DKIM_SIGNATURE_NAME));
 
-    //trace!("canonicalized DKIM header: {result:?}");
+    let mut result = Vec::with_capacity(name.len() + formatted_hdr_without_sig.len() + 1);
+
+    canonicalize::canon_header(&mut result, canon, name, formatted_hdr_without_sig);
+
+    // tracing::trace!("canonicalized DKIM header: {:?}", &bstr::BStr::new(&result));
 
     result
 }
@@ -1113,7 +692,7 @@ mod tests {
                     FieldName::new("subject").unwrap(),
                     FieldName::new("date").unwrap(),
                 ].into(),
-                user_id: Ident::new("@eng.example.net").unwrap(),
+                user_id: Some(Identity::new("@eng.example.net").unwrap()),
                 selector: Selector::new("brisbane").unwrap(),
                 body_length: None,
                 timestamp: Some(1117574938),

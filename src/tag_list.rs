@@ -30,6 +30,7 @@ pub fn parse_qp_section_tag_value(value: &str) -> Result<Vec<u8>, TagListParseEr
     }
 }
 
+// TODO does this allow empty value?
 pub fn parse_base64_tag_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
     let value = trim_base64_tag_value(value);
     Base64::decode_vec(&value).map_err(|_| TagListParseError::Syntax)

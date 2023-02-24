@@ -1,7 +1,7 @@
 use crate::crypto::HashAlgorithm;
 use sha2::Sha256;
 
-pub fn data_hash_digest(hash_alg: HashAlgorithm, headers: &[u8], dkim_header: &str) -> Box<[u8]> {
+pub fn data_hash_digest(hash_alg: HashAlgorithm, headers: &[u8], dkim_header: &[u8]) -> Box<[u8]> {
     use sha2::Digest;
 
     match hash_alg {
@@ -77,7 +77,7 @@ impl CountingHasher {
 
         let bytes = self.digest.finalize();
 
-        Ok((Box::from(bytes), self.bytes_written))
+        Ok((bytes, self.bytes_written))
     }
 
     pub fn is_done(&self) -> bool {
@@ -88,7 +88,7 @@ impl CountingHasher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canon::BodyCanonicalizer;
+    use crate::canonicalize::BodyCanonicalizer;
     use bstr::ByteSlice;
     use base64ct::{Base64, Encoding};
 

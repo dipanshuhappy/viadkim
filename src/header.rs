@@ -1,9 +1,9 @@
 //! Representation of email header data.
 
-use bstr::{BStr, ByteSlice};
+use bstr::ByteSlice;
 use std::{
-    hash::{Hash, Hasher},
     fmt::{self, Debug, Formatter},
+    hash::{Hash, Hasher},
 };
 
 pub type HeaderField = (FieldName, FieldBody);
@@ -43,6 +43,9 @@ impl AsRef<[HeaderField]> for HeaderFields {
     }
 }
 
+// TODO FieldName allows RFC 5322 header field names; but note that ';' is not practical in DKIM
+// the only place where ';' in FieldName is a problem is when constructing the
+// SigningRequest (and to some degree when manually constructing DkimSignature)
 #[derive(Clone, Eq)]
 pub struct FieldName(Box<str>);
 
@@ -52,7 +55,7 @@ impl FieldName {
         if value.is_empty() {
             return Err(HeaderFieldError);
         }
-        if !value.chars().all(|c| c.is_ascii_graphic() && !matches!(c, ':' | ';')) {
+        if !value.chars().all(|c| c.is_ascii_graphic() && c != ':') {
             return Err(HeaderFieldError);
         }
         Ok(Self(value))
@@ -121,7 +124,7 @@ impl AsRef<[u8]> for FieldBody {
 impl Debug for FieldBody {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_tuple("FieldBody")
-            .field(&BStr::new(&self.0))
+            .field(&self.0.as_bstr())
             .finish()
     }
 }

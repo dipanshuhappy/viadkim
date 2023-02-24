@@ -17,7 +17,7 @@
 // OpenDKIM.
 
 mod body_hash;
-pub mod canon;
+pub mod canonicalize;
 pub mod crypto;
 mod dqp;
 pub mod header;

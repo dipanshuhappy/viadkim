@@ -10,35 +10,43 @@
 
 <br>
 
-The **viadkim** library contains an implementation of DomainKeys Identified Mail
-(DKIM). DKIM is specified in [RFC 6376].
+TODO
+
+The **viadkim** library contains a complete implementation of DomainKeys
+Identified Mail (DKIM). DKIM is specified in [RFC 6376].
 
 This library provides both high-level APIs for signing and verifying email
-messages, as well as the low-level APIs used to implement this functionality.
-It is an asynchronous library based on the Tokio async runtime.
+messages, as well as the low-level APIs used to implement this functionality. It
+is an asynchronous library based on the Tokio async runtime.
 
-TODO API is experimental, in initial development
+This library is developed independently from scratch, by following the RFC
+specification and related documents. The design objectives sketched below are
+used to guide development.
 
-In terms of API, the main goals of viadkim are: efficiency, resilience with
-regard to inputs, and RFC conformance.
+# Design objectives
 
-Efficiency means, for example, doing DNS requests concurrently. Or, for example,
-message data can be processed in chunks, and if the necessary amount of chunks
-has been received can shortcut to finalisation, without the whole message being
-in memory at once. Or, for example, body canonicalisation is done only once even
-if multiple signatures request the same canonicalisation.
+TODO
 
-As for resilience when handling inputs, this means, for example, that viadkim is
-lenient with regard to encoding errors in inputs: stray Latin 1 bytes in headers
-pose no problem for this library, they are handled transparently as byte
-strings. Or, for example, internationalised email is supported and such inputs
-are again handled in the correct manner.
+The goal of viadkim is to provide a free DKIM library suitable for long-lived
+mail server processes, with strong RFC conformance guarantees.
 
-Finally, the meaning of RFC conformance requires no explanation. It does mean,
-for example, that the supported signature algorithms, for both signing and
-verifying, include only `rsa-sha256` and `ed25519-sha256`. The historic
-signature algorithm `rsa-sha1` is not supported, and similarly RSA key sizes
-below 1024 bits are not supported (see [RFC 8301]).
+Of particular importance is that the library should be **efficient**. Some items
+of note in this rubric are: doing DNS requests for public key records
+concurrently; bypass or shortcut message body processing where this is possible,
+and without the whole message being in memory at once; or sharing message body
+canonicalisation results among signature evaluation tasks.
+
+Of equal importance is a certain **resilience** and broad **compatibility in
+handling inputs**. Notably, internationalised email is fully supported in
+viadkim. But also malformed inputs that do occur in practice, such as stray
+Latin 1 bytes in headers are handled transparently. Generally, all inputs are
+handled gracefully, and similarly all outputs should be well-formed.
+
+Care is taken to **conform** strictly to **RFC 6376**, including RFC updates and
+known errata. Internationalised email was already mentioned. Also, for example,
+for both signing and verifying only the signature algorithms `rsa-sha256` and
+`ed25519-sha256` are supported, the historic signature algorithm `rsa-sha1` was
+retired and is not supported (see [RFC 8301]).
 
 [RFC 6376]: https://www.rfc-editor.org/rfc/rfc6376
 [RFC 8301]: https://www.rfc-editor.org/rfc/rfc8301
@@ -47,14 +55,22 @@ below 1024 bits are not supported (see [RFC 8301]).
 
 TODO
 
+Two structs provide the main entry points to DKIM processing with viadkim:
+`Signer` for signing a message, and `Verifier` for verifying a message’s
+signatures.
+
 DNS resolution is abstracted in trait `LookupTxt`.
 
 A lookup implementation of the `LookupTxt` trait can be made available for the
 Trust-DNS async resolver by enabling feature `trust-dns-resolver`.
 
-## Example
+## Examples
 
-TODO dkimverify
+TODO
+
+`dkimverify`
+
+`dkimsign`
 
 ## Licence
 

@@ -1,32 +1,33 @@
 use super::LookupTxt;
-use std::{future::Future, io, pin::Pin};
-use trust_dns_resolver::{Name as TrustDnsName, TokioAsyncResolver};
+use std::{
+    future::Future,
+    io::{self, ErrorKind},
+    pin::Pin,
+};
+use trust_dns_resolver::{error::ResolveErrorKind, Name, TokioAsyncResolver};
 
-// TODO actually make use of IntoIterator trait (avoid collection into Vec)
 impl LookupTxt for TokioAsyncResolver {
-    type Answer = Vec<Result<Vec<u8>, io::Error>>;
-    type Query<'a> = Pin<Box<dyn Future<Output = Result<Self::Answer, io::Error>> + Send + 'a>>;
+    type Answer = Box<dyn Iterator<Item = io::Result<Vec<u8>>>>;
+    type Query<'a> = Pin<Box<dyn Future<Output = io::Result<Self::Answer>> + Send + 'a>>;
 
     fn lookup_txt(&self, domain: &str) -> Self::Query<'_> {
-        let name = TrustDnsName::from_ascii(domain);
+        let name = Name::from_ascii(domain);
 
         Box::pin(async move {
-            let name = name?;
-            let it = self
-                .txt_lookup(name)
-                .await?
+            let name = name.map_err(|_| ErrorKind::InvalidInput)?;
+
+            let lookup = self.txt_lookup(name).await.map_err(|e| match e.kind() {
+                ResolveErrorKind::NoRecordsFound { .. } => io::Error::from(ErrorKind::NotFound),
+                _ => e.into(),
+            })?;
+
+            let txts = lookup
                 .into_iter()
-                .map(|txt| {
-                    let v: Vec<u8> = txt
-                        .iter()
-                        .flat_map(|bo| bo.as_ref())
-                        .copied()
-                        // .map(|data| String::from_utf8_lossy(data))
-                        .collect();
-                    Ok(v)
-                })
-                .collect();
-            Ok(it)
+                .map(|txt| Ok(txt.txt_data().join(&[][..])));
+
+            let txts: Box<dyn Iterator<Item = _>> = Box::new(txts);
+
+            Ok(txts)
         })
     }
 }

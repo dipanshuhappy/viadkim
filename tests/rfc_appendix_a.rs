@@ -2,13 +2,12 @@ use std::{
     future::Future,
     io::{self, ErrorKind},
     pin::Pin,
-    sync::Arc,
 };
 use tokio::fs;
 use viadkim::{
-    crypto::{KeyType, SigningKey},
-    signature::{DomainName, Selector},
-    signer::{KeyId, KeyStore, SigningRequest, SigningStatus},
+    crypto::SigningKey,
+    signature::{DomainName, Selector, SignatureAlgorithm},
+    signer::{SigningRequest, SigningStatus},
     verifier::{LookupTxt, VerificationStatus},
     FieldName, HeaderFields, Signer, Verifier,
 };
@@ -50,23 +49,6 @@ impl LookupTxt for MockLookup {
                 }
                 _ => Err(ErrorKind::NotFound.into()),
             }
-        })
-    }
-}
-
-struct MockKeyStore;
-
-impl KeyStore for MockKeyStore {
-    type Query<'a> = Pin<Box<dyn Future<Output = io::Result<Option<Arc<SigningKey>>>> + Send + 'a>>;
-
-    fn get(&self, key_id: KeyId) -> Self::Query<'_> {
-        Box::pin(async move {
-            if key_id == KeyId::new(1) {
-                let s = fs::read_to_string("tests/brisbane_private.pem").await?;
-                let key = SigningKey::from_pkcs8_pem(&s)?;
-                return Ok(Some(Arc::new(key)));
-            }
-            Ok(None)
         })
     }
 }
@@ -123,11 +105,14 @@ async fn sign_roundtrip() {
 
     let body = make_body();
 
+    let s = fs::read_to_string("tests/brisbane_private.pem").await.unwrap();
+    let signing_key = SigningKey::from_pkcs8_pem(&s).unwrap();
+
     let mut req = SigningRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("brisbane").unwrap(),
-        KeyType::Rsa,
-        KeyId::new(1),
+        SignatureAlgorithm::RsaSha256,
+        signing_key,
     );
     req.signed_headers = vec![
         FieldName::new("Received").unwrap(),
@@ -140,13 +125,11 @@ async fn sign_roundtrip() {
 
     let headers = make_header_fields();
 
-    let mut signer = Signer::prepare_signing(vec![req], headers).unwrap();
+    let mut signer = Signer::prepare_signing([req], headers).unwrap();
 
     signer.body_chunk(&body);
 
-    let key_store = MockKeyStore;
-
-    let sigs = signer.finish(&key_store).await;
+    let sigs = signer.finish().await;
 
     let result = sigs.into_iter().next().unwrap();
 

@@ -102,6 +102,22 @@ impl SigningKey {
             Err(io::Error::new(ErrorKind::Other, "unknown private key type"))
         }
     }
+
+    pub fn signature_length(&self) -> usize {
+        match self {
+            Self::Rsa(k) => {
+                use ::rsa::PublicKeyParts;
+                k.size()
+            }
+            Self::Ed25519(_) => ::ed25519_dalek::SIGNATURE_LENGTH,
+        }
+    }
+}
+
+impl AsRef<SigningKey> for SigningKey {
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -152,17 +168,17 @@ pub enum HashAlgorithm {
     Sha256,
 }
 
+impl HashAlgorithm {
+    pub fn all() -> Vec<Self> {
+        vec![Self::Sha256]
+    }
+}
+
 impl CanonicalStr for HashAlgorithm {
     fn canonical_str(&self) -> &'static str {
         match self {
             Self::Sha256 => "sha256",
         }
-    }
-}
-
-impl HashAlgorithm {
-    pub fn all() -> Vec<Self> {
-        vec![Self::Sha256]
     }
 }
 
