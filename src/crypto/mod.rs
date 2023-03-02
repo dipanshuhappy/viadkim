@@ -166,11 +166,17 @@ impl CanonicalStr for KeyType {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HashAlgorithm {
     Sha256,
+    #[cfg(feature = "sha1")]
+    Sha1,
 }
 
 impl HashAlgorithm {
     pub fn all() -> Vec<Self> {
-        vec![Self::Sha256]
+        vec![
+            Self::Sha256,
+            #[cfg(feature = "sha1")]
+            Self::Sha1,
+        ]
     }
 }
 
@@ -178,6 +184,8 @@ impl CanonicalStr for HashAlgorithm {
     fn canonical_str(&self) -> &'static str {
         match self {
             Self::Sha256 => "sha256",
+            #[cfg(feature = "sha1")]
+            Self::Sha1 => "sha1",
         }
     }
 }

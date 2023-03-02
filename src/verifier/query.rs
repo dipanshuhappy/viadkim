@@ -94,6 +94,7 @@ impl Queries {
         let mut builder = QueriesBuilder::new();
 
         for task in sigs {
+            // TODO don't check if DkimSignature is available, check status instead! (maybe has DkimSig but is error)
             if let Some(sig) = &task.sig {
                 builder.add_lookup(&sig.domain, &sig.selector, task.index);
             }
@@ -103,7 +104,7 @@ impl Queries {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "trust-dns-resolver"))]
 mod tests {
     use super::*;
     use crate::record::DkimKeyRecord;
@@ -121,7 +122,7 @@ mod tests {
 
         let first_txt = r[0].as_ref().unwrap();
 
-        let r = DkimKeyRecord::from_str(&first_txt);
+        let r = DkimKeyRecord::from_str(first_txt);
 
         assert!(r.is_ok());
     }

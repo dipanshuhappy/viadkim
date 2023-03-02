@@ -86,6 +86,11 @@ impl DkimKeyRecord {
                     for v in parse_colon_separated_tag_value(value) {
                         if v.eq_ignore_ascii_case("sha256") {
                             hash_algorithms.push(HashAlgorithm::Sha256);
+                        } else {
+                            #[cfg(feature = "sha1")]
+                            if v.eq_ignore_ascii_case("sha1") {
+                                hash_algorithms.push(HashAlgorithm::Sha1);
+                            }
                         }
                     }
                     if hash_algorithms.is_empty() {
@@ -171,10 +176,16 @@ mod tests {
 
         let dkim_key_record = DkimKeyRecord::from_tag_list(&tags).unwrap();
 
+        let hash_algorithms = vec![
+            HashAlgorithm::Sha256,
+            #[cfg(feature = "sha1")]
+            HashAlgorithm::Sha1,
+        ];
+
         assert_eq!(
             dkim_key_record,
             DkimKeyRecord {
-                hash_algorithms: [HashAlgorithm::Sha256].into(),
+                hash_algorithms: hash_algorithms.into(),
                 key_type: KeyType::Rsa,
                 notes: Some("highly interesting".into()),
                 key_data: b"abc".to_vec().into(),

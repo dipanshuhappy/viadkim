@@ -4,6 +4,8 @@ use rsa::{
     RsaPrivateKey, RsaPublicKey,
 };
 use sha2::Sha256;
+#[cfg(feature = "sha1")]
+use sha1::Sha1;
 
 pub fn get_public_key_size(k: &RsaPublicKey) -> usize {
     k.size() * 8
@@ -35,6 +37,10 @@ pub fn verify_rsa(
         HashAlgorithm::Sha256 => {
             public_key.verify(Pkcs1v15Sign::new::<Sha256>(), msg, signature_data)
         }
+        #[cfg(feature = "sha1")]
+        HashAlgorithm::Sha1 => {
+            public_key.verify(Pkcs1v15Sign::new::<Sha1>(), msg, signature_data)
+        }
     };
 
     // TODO consider recording rsa crypto error _e somewhere
@@ -48,6 +54,8 @@ pub fn sign_rsa(
 ) -> Result<Vec<u8>, SigningError> {
     let result = match hash_alg {
         HashAlgorithm::Sha256 => private_key.sign(Pkcs1v15Sign::new::<Sha256>(), msg),
+        #[cfg(feature = "sha1")]
+        HashAlgorithm::Sha1 => private_key.sign(Pkcs1v15Sign::new::<Sha1>(), msg),
     };
 
     result.map_err(|_| SigningError::SigningFailure)

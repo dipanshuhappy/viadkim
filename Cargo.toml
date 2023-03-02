@@ -17,6 +17,7 @@ ed25519-dalek = { version = "2.0.0-pre.0", features = ["pem"] }
 idna = "0.3.0"
 pkcs8 = { version = "0.9.0", features = ["pem"] }
 rsa = "0.8.1"
+sha1 = { version = "0.10.5", features = ["oid"], optional = true }
 sha2 = { version = "0.10.6", features = ["oid"] }
 tokio = { version = "1.25.0", features = ["fs", "macros", "rt", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1.37"
@@ -35,4 +36,4 @@ name = "basic"
 required-features = ["trust-dns-resolver"]
 
 [package.metadata.docs.rs]
-all-features = true
+features = ["trust-dns-resolver"]

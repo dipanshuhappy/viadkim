@@ -3,7 +3,7 @@ use tokio::fs;
 use viadkim::{
     crypto::{HashAlgorithm, SigningKey},
     header::HeaderFields,
-    signature::{DomainName, Selector},
+    signature::{DomainName, Selector, SignatureAlgorithm},
     signer::{Signer, SigningRequest, SigningStatus},
 };
 
@@ -36,7 +36,7 @@ async fn main() {
     let selector = Selector::new(&selector).unwrap();
     let keyfile = fs::read_to_string(keyfile).await.unwrap();
     let signing_key = SigningKey::from_pkcs8_pem(&keyfile).unwrap();
-    let signature_alg = (signing_key.to_key_type(), HashAlgorithm::Sha256).into();
+    let signature_alg = SignatureAlgorithm::from_parts(signing_key.to_key_type(), HashAlgorithm::Sha256).unwrap();
 
     let request = SigningRequest::new(domain, selector, signature_alg, signing_key);
 

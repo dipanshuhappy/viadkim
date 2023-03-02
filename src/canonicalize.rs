@@ -7,7 +7,8 @@ use crate::{
 use bstr::ByteSlice;
 use std::collections::HashSet;
 
-#[derive(Copy, Clone)]
+// TODO rename BodyHashStatus, move elsewhere
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum BodyCanonStatus {
     NotDone,
     Done,

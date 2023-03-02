@@ -1,9 +1,9 @@
 //! Signer and supporting types.
 
 use crate::{
-    body_hash::{CanonicalizingHasher, CanonicalizingHasherBuilder},
+    body_hash::{BodyHasher, BodyHasherError, BodyHasherBuilder},
     canonicalize::{self, BodyCanonStatus},
-    crypto::{self, HashAlgorithm, InsufficientInput, KeyType, SigningKey},
+    crypto::{self, HashAlgorithm, KeyType, SigningKey},
     header::{FieldName, HeaderFields},
     signature::{
         self, Canonicalization, DkimSignature, DomainName, Identity, Selector, SignatureAlgorithm,
@@ -41,7 +41,7 @@ pub struct SigningRequest<T> {
     pub user_id: Option<Identity>,
     pub selector: Selector,
     pub body_length: BodyLength,
-    pub copy_headers: bool,  // copy all headers used to create the signature
+    pub copy_headers: bool,  // copy all headers used to create the signature in z= tag
     pub timestamp: Option<Timestamp>,
     pub valid_duration: Option<Duration>,
     pub header_name: String,  // ~"DKIM-Signature"
@@ -85,10 +85,14 @@ impl<T> SigningRequest<T> {
 
 struct SigningTask<T> {
     request: SigningRequest<T>,
+    error: Option<SignerError>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SignerError {
+    // Conversion from or to a requested integer data type cannot be supported
+    // in the implementation or on the current platform.
+    Overflow,
     TooManyRequests,
     InvalidSignedFieldName,
     MissingFromHeader,
@@ -107,7 +111,12 @@ pub struct SigningResult {
 #[derive(Debug, PartialEq)]
 pub enum SigningStatus {
     Success {
+        // boxed b/c of enum variant size ...
         signature: Box<DkimSignature>,
+        // Usage: header_name and header_value are meant to be concatenated with
+        // only an intervening colon, no additional whitespace! this is vital for
+        // "simple" header canonicalization where whitespace changes are not allowed!
+        // TODO perhaps make a method format_header(&self) -> String { format!("{name}:{value}") }
         header_name: String,
         header_value: String,
     },
@@ -119,7 +128,7 @@ pub enum SigningStatus {
 pub struct Signer<T> {
     tasks: Vec<SigningTask<T>>,  // non-empty (?)
     headers: HeaderFields,
-    canonicalizing_hasher: CanonicalizingHasher,
+    body_hasher: BodyHasher,
 }
 
 impl<T> Signer<T>
@@ -141,7 +150,7 @@ where
         // check signing request, eg must sign From header etc.
 
         let mut tasks = vec![];
-        let mut canonicalizing_hasher = CanonicalizingHasherBuilder::new();
+        let mut body_hasher = BodyHasherBuilder::new(false);
 
         for (i, request) in requests.into_iter().enumerate() {
             if i >= 10 {
@@ -152,20 +161,41 @@ where
             if request.signed_headers.iter().any(|name| name.as_ref().contains(';'))
                 || request.oversigned_headers.iter().any(|name| name.as_ref().contains(';'))
             {
-                return Err(SignerError::InvalidSignedFieldName);
+                let task = SigningTask {
+                    request,
+                    error: Some(SignerError::InvalidSignedFieldName),
+                };
+
+                tasks.push(task);
+
+                continue;
             }
 
-            // check user id domain is subdomain of signing domain
+            // TODO check user id domain is subdomain of signing domain
 
+            // Calculate desired body length limit
             let body_length = match request.body_length {
                 BodyLength::All | BodyLength::OnlyMessageLength => None,
-                BodyLength::Exact(n) => Some(n.try_into().unwrap_or(usize::MAX)),
+                BodyLength::Exact(n) => {
+                    match n.try_into() {
+                        Ok(n) => Some(n),
+                        Err(_) => {
+                            let task = SigningTask {
+                                request,
+                                error: Some(SignerError::Overflow),
+                            };
+                            tasks.push(task);
+                            continue;
+                        }
+                    }
+                }
             };
+
             let hash_alg = request.signature_alg.to_hash_algorithm();
             let canon_kind = request.canonicalization.body;
-            canonicalizing_hasher.register_canon(body_length, hash_alg, canon_kind);
+            body_hasher.register_canonicalization(body_length, hash_alg, canon_kind);
 
-            let task = SigningTask { request };
+            let task = SigningTask { request, error: None };
 
             tasks.push(task);
         }
@@ -175,21 +205,29 @@ where
         Ok(Self {
             tasks,
             headers,
-            canonicalizing_hasher: canonicalizing_hasher.build(),
+            body_hasher: body_hasher.build(),
         })
     }
 
     pub fn body_chunk(&mut self, chunk: &[u8]) -> BodyCanonStatus {
-        self.canonicalizing_hasher.hash_chunk(chunk)
+        self.body_hasher.hash_chunk(chunk)
     }
 
     // Doesn't actually need async, but may use it to introduce artificial await points?
     pub async fn finish(self) -> Vec<SigningResult> {
         let mut result = vec![];
 
-        let hasher_results = self.canonicalizing_hasher.finish();
+        let hasher_results = self.body_hasher.finish();
 
         for task in self.tasks {
+            if let Some(error) = task.error {
+                // failed task
+                result.push(SigningResult {
+                    status: SigningStatus::Error { error },
+                });
+                continue;
+            }
+
             let request = task.request;
 
             let algorithm = request.signature_alg;
@@ -199,14 +237,17 @@ where
 
             let body_length = match request.body_length {
                 BodyLength::All | BodyLength::OnlyMessageLength => None,
-                BodyLength::Exact(n) => Some(n.try_into().unwrap_or(usize::MAX)),
+                BodyLength::Exact(n) => {
+                    // cannot failed thanks to earlier input validation
+                    Some(n.try_into().expect("unsupported integer conversion"))
+                }
             };
             let hash_alg = algorithm.to_hash_algorithm();
             let key = (body_length, hash_alg, canonicalization.body);
 
             let (h, &final_len) = match hasher_results.get(&key).unwrap() {
                 Ok((h, final_len)) => (h, final_len),
-                Err(InsufficientInput) => {
+                Err(BodyHasherError::InsufficientInput) => {
                     result.push(SigningResult {
                         status: SigningStatus::Error {
                             error: SignerError::InsufficientBodyLength,
@@ -214,13 +255,26 @@ where
                     });
                     continue;
                 }
+                Err(BodyHasherError::ForbiddenTruncation) => {
+                    panic!("unexpected canonicalization error");
+                }
             };
 
             let body_hash = h.clone();
             let body_length = match request.body_length {
                 BodyLength::All => None,
                 BodyLength::OnlyMessageLength | BodyLength::Exact(_) => {
-                    Some(final_len.try_into().unwrap_or(u64::MAX))
+                    match final_len.try_into() {
+                        Ok(n) => Some(n),
+                        Err(_) => {
+                            result.push(SigningResult {
+                                status: SigningStatus::Error {
+                                    error: SignerError::Overflow,
+                                },
+                            });
+                            continue;
+                        }
+                    }
                 }
             };
 

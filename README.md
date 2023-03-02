@@ -46,7 +46,7 @@ Care is taken to **conform** strictly to **RFC 6376**, including RFC updates and
 known errata. Internationalised email was already mentioned. Also, for example,
 for both signing and verifying only the signature algorithms `rsa-sha256` and
 `ed25519-sha256` are supported, the historic signature algorithm `rsa-sha1` was
-retired and is not supported (see [RFC 8301]).
+retired and is not supported (unless explicitly enabled; see [RFC 8301]).
 
 [RFC 6376]: https://www.rfc-editor.org/rfc/rfc6376
 [RFC 8301]: https://www.rfc-editor.org/rfc/rfc8301

@@ -8,7 +8,7 @@ use crate::{
         self, CanonicalizationAlgorithm, DkimSignature, DkimSignatureError, DkimSignatureErrorKind,
         DomainName, Identity, DKIM_SIGNATURE_NAME,
     },
-    verifier::{query::Queries, Config, VerificationStatus, VerifierError},
+    verifier::{query::Queries, Config, PolicyError, VerificationStatus, VerifierError},
 };
 use std::{
     borrow::Cow,
@@ -34,6 +34,7 @@ impl<'a> HeaderVerifier<'a> {
             .filter(|(_, (name, _))| *name == DKIM_SIGNATURE_NAME)
             .take(config.max_signatures);
 
+        'outer:
         for (idx, (name, value)) in dkim_headers {
             // at this point, the DKIM sig "counts", and a result must be recorded
 
@@ -43,19 +44,44 @@ impl<'a> HeaderVerifier<'a> {
                 Err(_) => {
                     tasks.push(VerifyingTask::new_not_started(
                         idx,
-                        DkimSignatureError {
+                        VerifierError::DkimSignatureHeaderFormat(DkimSignatureError {
                             domain: None,
                             signature_data_base64: None,
                             kind: DkimSignatureErrorKind::InvalidTagList,
-                        },
+                        }),
                     ));
                     continue;
                 }
             };
 
             let t = match DkimSignature::from_str(value) {
-                Ok(sig) => VerifyingTask::new(idx, sig, name.as_ref().into(), value.into()),
-                Err(e) => VerifyingTask::new_not_started(idx, e),
+                Ok(sig) => {
+                    // TODO revisit, additional policy checks on signature
+                    // TODO here, a DkimSignature is actually available: store in task
+                    for h in &config.required_signed_headers {
+                        if !sig.signed_headers.contains(h) {
+                            tasks.push(VerifyingTask::new_not_started(
+                                idx,
+                                VerifierError::Policy(PolicyError::RequiredHeadersNotSigned),
+                            ));
+                            continue 'outer;
+                        }
+                    }
+
+                    if let Some(len) = sig.body_length {
+                        if usize::try_from(len).is_err() {
+                            // signed body length too large to undergo DKIM processing on this platform
+                            tasks.push(VerifyingTask::new_not_started(
+                                idx,
+                                VerifierError::Overflow,
+                            ));
+                            continue 'outer;
+                        }
+                    }
+
+                    VerifyingTask::new(idx, sig, name.as_ref().into(), value.into())
+                }
+                Err(e) => VerifyingTask::new_not_started(idx, VerifierError::DkimSignatureHeaderFormat(e)),
             };
 
             tasks.push(t);
@@ -175,8 +201,8 @@ pub struct VerifyingTask {
 }
 
 impl VerifyingTask {
-    fn new_not_started(index: usize, error: DkimSignatureError) -> Self {
-        let status = VerificationStatus::Failure(VerifierError::DkimSignatureHeaderFormat(error));
+    fn new_not_started(index: usize, error: VerifierError) -> Self {
+        let status = VerificationStatus::Failure(error);
         Self {
             index,
             sig: None,

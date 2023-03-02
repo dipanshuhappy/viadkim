@@ -30,14 +30,30 @@ pub enum SignatureAlgorithm {
     RsaSha256,
     /// The *ed25519-sha256* signature algorithm.
     Ed25519Sha256,
+    #[cfg(feature = "sha1")]
+    /// The *rsa-sha1* signature algorithm.
+    RsaSha1,
 }
 
 impl SignatureAlgorithm {
+    pub fn from_parts(key_type: KeyType, algorithm: HashAlgorithm) -> Option<Self> {
+        match (key_type, algorithm) {
+            (KeyType::Rsa, HashAlgorithm::Sha256) => Some(Self::RsaSha256),
+            (KeyType::Ed25519, HashAlgorithm::Sha256) => Some(Self::Ed25519Sha256),
+            #[cfg(feature = "sha1")]
+            (KeyType::Rsa, HashAlgorithm::Sha1) => Some(Self::RsaSha1),
+            #[cfg(feature = "sha1")]
+            _ => None,
+        }
+    }
+
     /// Returns this signature algorithm’s key type.
     pub fn to_key_type(self) -> KeyType {
         match self {
             Self::RsaSha256 => KeyType::Rsa,
             Self::Ed25519Sha256 => KeyType::Ed25519,
+            #[cfg(feature = "sha1")]
+            Self::RsaSha1 => KeyType::Rsa,
         }
     }
 
@@ -45,16 +61,8 @@ impl SignatureAlgorithm {
     pub fn to_hash_algorithm(self) -> HashAlgorithm {
         match self {
             Self::RsaSha256 | Self::Ed25519Sha256 => HashAlgorithm::Sha256,
-        }
-    }
-}
-
-// TODO make inherent method instead?
-impl From<(KeyType, HashAlgorithm)> for SignatureAlgorithm {
-    fn from(input: (KeyType, HashAlgorithm)) -> Self {
-        match input {
-            (KeyType::Rsa, HashAlgorithm::Sha256) => Self::RsaSha256,
-            (KeyType::Ed25519, HashAlgorithm::Sha256) => Self::Ed25519Sha256,
+            #[cfg(feature = "sha1")]
+            Self::RsaSha1 => HashAlgorithm::Sha1,
         }
     }
 }
@@ -64,6 +72,8 @@ impl CanonicalStr for SignatureAlgorithm {
         match self {
             Self::RsaSha256 => "rsa-sha256",
             Self::Ed25519Sha256 => "ed25519-sha256",
+            #[cfg(feature = "sha1")]
+            Self::RsaSha1 => "rsa-sha1",
         }
     }
 }
@@ -83,6 +93,10 @@ impl FromStr for SignatureAlgorithm {
         } else if s.eq_ignore_ascii_case("ed25519-sha256") {
             Ok(Self::Ed25519Sha256)
         } else {
+            #[cfg(feature = "sha1")]
+            if s.eq_ignore_ascii_case("rsa-sha1") {
+                return Ok(Self::RsaSha1);
+            }
             Err("unknown signature algorithm")
         }
     }
@@ -342,13 +356,13 @@ impl DkimSignature {
                 "a" => {
                     // TODO here and elsewhere ensure conformance to value syntax (no "a b\r\n c x..."), else ValueSyntax
                     let value = value.parse().map_err(|_| {
+                        #[cfg(not(feature = "sha1"))]
                         if value.eq_ignore_ascii_case("rsa-sha1") {
                             // Note: special-case rsa-sha1 as recognised but
                             // no longer supported (RFC 8301).
-                            DkimSignatureErrorKind::HistoricAlgorithm
-                        } else {
-                            DkimSignatureErrorKind::UnsupportedAlgorithm
+                            return DkimSignatureErrorKind::HistoricAlgorithm;
                         }
+                        DkimSignatureErrorKind::UnsupportedAlgorithm
                     })?;
                     algorithm = Some(value);
                 }

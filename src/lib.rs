@@ -1,6 +1,15 @@
 //! DKIM library.
 //!
 //! *experimental, in development*
+//!
+//! # Cargo features
+//!
+//! The feature **`trust-dns-resolver`** makes an implementation of `LookupTxt`
+//! available for the Trust-DNS resolver.
+//!
+//! The feature **`sha1`** enables support for the insecure, historic SHA-1 hash
+//! algorithm for verification and signing. This is a legacy compatibility
+//! feature, its use is strongly discouraged.
 
 // - secure
 // - RFCs compliance
