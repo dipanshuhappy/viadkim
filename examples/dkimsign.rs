@@ -1,10 +1,13 @@
 use std::{env, process};
-use tokio::fs;
+use tokio::{
+    fs,
+    io::{self, AsyncReadExt},
+};
 use viadkim::{
     crypto::{HashAlgorithm, SigningKey},
-    header::HeaderFields,
+    header,
     signature::{DomainName, Selector, SignatureAlgorithm},
-    signer::{Signer, SigningRequest, SigningStatus},
+    signer::{SignRequest, Signer, SigningStatus},
 };
 
 #[tokio::main]
@@ -13,62 +16,43 @@ async fn main() {
 
     let mut args = env::args();
 
-    let (domain, selector, keyfile, path) = match (
+    let (key_file, domain, selector) = match (
         args.next().as_deref(),
         args.next(),
         args.next(),
         args.next(),
         args.next(),
     ) {
-        (_, Some(domain), Some(selector), Some(keyfile), Some(path)) => {
-            (domain, selector, keyfile, path)
-        }
+        (_, Some(key_file), Some(domain), Some(selector), None) => (key_file, domain, selector),
         (program, ..) => {
-            eprintln!(
-                "usage: {} <domain> <selector> <keyfile> <path>",
-                program.unwrap_or("dkimsign")
-            );
+            eprintln!("usage: {} <key_file> <domain> <selector>", program.unwrap_or("dkimsign"));
             process::exit(1);
         }
     };
 
-    let domain = DomainName::new(&domain).unwrap();
-    let selector = Selector::new(&selector).unwrap();
-    let keyfile = fs::read_to_string(keyfile).await.unwrap();
-    let signing_key = SigningKey::from_pkcs8_pem(&keyfile).unwrap();
-    let signature_alg = SignatureAlgorithm::from_parts(signing_key.to_key_type(), HashAlgorithm::Sha256).unwrap();
+    let key_file = fs::read_to_string(key_file).await.unwrap();
+    let domain = DomainName::new(domain).unwrap();
+    let selector = Selector::new(selector).unwrap();
 
-    let request = SigningRequest::new(domain, selector, signature_alg, signing_key);
+    let signing_key = SigningKey::from_pkcs8_pem(&key_file).unwrap();
+    let algorithm = SignatureAlgorithm::from_parts(signing_key.key_type(), HashAlgorithm::Sha256).unwrap();
 
-    let s = fs::read_to_string(path).await.unwrap();
+    let mut request = SignRequest::new(domain, selector, algorithm, signing_key);
+    request.valid_duration = None;
+    request.copy_headers = false;
+    // request.body_length = viadkim::signer::BodyLength::OnlyMessageLength;
+    // request.user_id = Some(viadkim::signature::Identity::new("\"abc;de\"@中文.gluet.ch").unwrap());
+    // request.algorithm = SignatureAlgorithm::RsaSha1;
 
-    let s = s.replace('\n', "\r\n");
+    let mut msg = String::new();
+    let n = io::stdin().read_to_string(&mut msg).await.unwrap();
+    assert!(n > 0, "empty message on stdin");
 
-    let (header, body) = s.split_once("\r\n\r\n").unwrap();
+    let msg = msg.replace('\n', "\r\n");
 
-    // TODO XXX
+    let (header, body) = msg.split_once("\r\n\r\n").unwrap();
 
-    let mut headers = vec![];
-    let mut current_line = "".to_owned();
-    for (i, header_line) in header.lines().enumerate() {
-        if header_line.starts_with(' ') || header_line.starts_with('\t') {
-            current_line.push_str("\r\n");
-            current_line.push_str(header_line);
-        } else {
-            if i != 0 {
-                let s = std::mem::take(&mut current_line);
-                let (name, value) = s.split_once(':').unwrap();
-                headers.push((name.to_owned(), value.as_bytes().to_vec()));
-            }
-            current_line.push_str(header_line);
-        }
-    }
-    let s = std::mem::take(&mut current_line);
-    let (name, value) = s.split_once(':').unwrap();
-    headers.push((name.to_owned(), value.as_bytes().to_vec()));
-
-    let headers = HeaderFields::from_vec(headers).unwrap();
-
+    let headers = header::parse_header(header).unwrap();
     // dbg!(&headers);
 
     let mut signer = Signer::prepare_signing([request], headers).unwrap();
@@ -78,13 +62,13 @@ async fn main() {
     let sigs = signer.finish().await;
 
     for (_i, sig) in sigs.into_iter().enumerate() {
-        println!();
         match sig.status {
             SigningStatus::Success {
                 signature: _sig,
                 header_name,
                 header_value,
             } => {
+                let header_value = header_value.replace("\r\n", "\n");
                 println!("{header_name}:{header_value}");
             }
             SigningStatus::Error { error } => {

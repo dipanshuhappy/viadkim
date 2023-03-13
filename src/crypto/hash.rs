@@ -3,21 +3,30 @@ use sha2::Sha256;
 #[cfg(feature = "sha1")]
 use sha1::Sha1;
 
-pub fn data_hash_digest(hash_alg: HashAlgorithm, headers: &[u8], dkim_header: &[u8]) -> Box<[u8]> {
+pub fn digest_slices<I, T>(
+    hash_alg: HashAlgorithm,
+    slices: I,
+) -> Box<[u8]>
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<[u8]>,
+{
     use digest::Digest;
 
     match hash_alg {
         HashAlgorithm::Sha256 => {
             let mut hasher = Sha256::new();
-            hasher.update(headers);
-            hasher.update(dkim_header);
+            for bytes in slices {
+                hasher.update(bytes.as_ref());
+            }
             Box::from(&hasher.finalize()[..])
         }
         #[cfg(feature = "sha1")]
         HashAlgorithm::Sha1 => {
             let mut hasher = Sha1::new();
-            hasher.update(headers);
-            hasher.update(dkim_header);
+            for bytes in slices {
+                hasher.update(bytes.as_ref());
+            }
             Box::from(&hasher.finalize()[..])
         }
     }
@@ -29,7 +38,7 @@ pub struct InsufficientInput;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HashStatus {
     AllConsumed,  // input was digested entirely
-    Truncated,    // input was only partially digested, part of it was ignored
+    Truncated,  // input was only partially digested, part of it was ignored
 }
 
 pub struct CountingHasher {
@@ -126,32 +135,35 @@ mod tests {
     }
 
     #[test]
-    fn counting_hasher_crlf_body() {
-        let mut hasher = CountingHasher::new(HashAlgorithm::Sha256, None);
-
-        hasher.update(b"\r\n");
-
-        let (hash, len) = hasher.finish().unwrap();
-
+    fn counting_hasher_rfc_examples() {
         // See §3.4.3:
-        assert_eq!(
-            Base64::encode_string(&hash),
-            "frcCV1k9oG9oKj3dpUqdJg1PxRT2RSN/XKdLCPjaYaY="
-        );
+        let (hash, len) = hash_with_counting_hasher(HashAlgorithm::Sha256, b"\r\n");
+        assert_eq!(Base64::encode_string(&hash), "frcCV1k9oG9oKj3dpUqdJg1PxRT2RSN/XKdLCPjaYaY=");
         assert_eq!(len, 2);
-    }
-
-    #[test]
-    fn counting_hasher_empty_body() {
-        let hasher = CountingHasher::new(HashAlgorithm::Sha256, None);
-
-        let (hash, len) = hasher.finish().unwrap();
 
         // See §3.4.4:
-        assert_eq!(
-            Base64::encode_string(&hash),
-            "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
-        );
+        let (hash, len) = hash_with_counting_hasher(HashAlgorithm::Sha256, b"");
+        assert_eq!(Base64::encode_string(&hash), "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
         assert_eq!(len, 0);
+    }
+
+    #[cfg(feature = "sha1")]
+    #[test]
+    fn counting_hasher_rfc_examples_sha1() {
+        // See §3.4.3:
+        let (hash, len) = hash_with_counting_hasher(HashAlgorithm::Sha1, b"\r\n");
+        assert_eq!(Base64::encode_string(&hash), "uoq1oCgLlTqpdDX/iUbLy7J1Wic=");
+        assert_eq!(len, 2);
+
+        // See §3.4.4:
+        let (hash, len) = hash_with_counting_hasher(HashAlgorithm::Sha1, b"");
+        assert_eq!(Base64::encode_string(&hash), "2jmj7l5rSw0yVb/vlWAYkK/YBwk=");
+        assert_eq!(len, 0);
+    }
+
+    fn hash_with_counting_hasher(alg: HashAlgorithm, bytes: &[u8]) -> (Box<[u8]>, usize) {
+        let mut hasher = CountingHasher::new(alg, None);
+        hasher.update(bytes);
+        hasher.finish().unwrap()
     }
 }

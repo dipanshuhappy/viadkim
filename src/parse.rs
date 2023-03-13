@@ -1,6 +1,6 @@
 // Parsing utilities.
 
-// TODO
+// TODO revisit module, move elsewhere?
 
 pub fn strip_suffix<'a>(s: &'a str, suffix: &str) -> &'a str {
     debug_assert!(s.ends_with(suffix));

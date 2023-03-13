@@ -2,7 +2,10 @@ use crate::{
     signature::{DomainName, Selector},
     verifier::{header::VerifyingTask, Config, LookupTxt},
 };
-use std::{collections::HashMap, io::{self, ErrorKind}};
+use std::{
+    collections::HashMap,
+    io::{self, ErrorKind},
+};
 use tokio::{task::JoinSet, time};
 
 struct QueriesBuilder {
@@ -18,14 +21,10 @@ impl QueriesBuilder {
     }
 
     fn add_lookup(&mut self, domain: &DomainName, selector: &Selector, index: usize) {
-        let domain = domain.as_ref();
-        let selector = selector.as_ref();
+        let domain = domain.to_ascii();
+        let selector = selector.to_ascii();
 
-        // Note: domain and selector here guaranteed to be convertible to ASCII.
-        let domain = idna::domain_to_ascii(domain).unwrap();
-        let selector = idna::domain_to_ascii(selector).unwrap();
-
-        self.lookup_pairs.entry((domain, selector)).or_insert(vec![]).push(index);
+        self.lookup_pairs.entry((domain, selector)).or_default().push(index);
     }
 
     fn spawn_all<T>(self, resolver: &T, config: &Config) -> Queries
@@ -69,8 +68,8 @@ async fn look_up_records<T: LookupTxt + ?Sized>(
 
     // §6.1.2: ‘If the query for the public key returns multiple key records,
     // the Verifier can choose one of the key records or may cycle through the
-    // key records […]. The order of the key records is unspecified.’ We return
-    // at most three keys.
+    // key records […]. The order of the key records is unspecified.’ As a
+    // courtesy we do try at most three keys.
     let result = txts
         .into_iter()
         .take(3)
@@ -94,7 +93,7 @@ impl Queries {
         let mut builder = QueriesBuilder::new();
 
         for task in sigs {
-            // TODO don't check if DkimSignature is available, check status instead! (maybe has DkimSig but is error)
+            // TODO revisit: don't check if DkimSignature is available, check status instead
             if let Some(sig) = &task.sig {
                 builder.add_lookup(&sig.domain, &sig.selector, task.index);
             }

@@ -1,6 +1,8 @@
 use crate::parse::{is_hexdig, is_wsp, strip_fws, strip_suffix};
 use std::{fmt::Write, str};
 
+// TODO revisit module, names
+
 // no surrounding or repeated FWS allowed (yes, thanks to tag-value)
 pub fn dqp_decode(mut s: &str) -> Result<Vec<u8>, &'static str> {
     if s.is_empty() {

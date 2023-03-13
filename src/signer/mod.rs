@@ -1,99 +1,35 @@
 //! Signer and supporting types.
 
-use crate::{
-    body_hash::{BodyHasher, BodyHasherError, BodyHasherBuilder},
-    canonicalize::{self, BodyCanonStatus},
-    crypto::{self, HashAlgorithm, KeyType, SigningKey},
-    header::{FieldName, HeaderFields},
-    signature::{
-        self, Canonicalization, DkimSignature, DomainName, Identity, Selector, SignatureAlgorithm,
-        DKIM_SIGNATURE_NAME, LINE_WIDTH,
-    },
+mod format;
+mod request;
+mod sign;
+
+pub use crate::signer::request::{
+    get_default_excluded_headers, get_default_signed_headers, BodyLength, HeaderSelection,
+    OversignStrategy, SignRequest, Timestamp,
 };
-use std::time::{Duration, SystemTime};
-use tracing::trace;
 
-#[derive(Debug, Default, PartialEq, Eq)]
-pub enum BodyLength {
-    #[default]
-    All,  // no l=
-    OnlyMessageLength,  // l=<msg-length>
-    Exact(u64),  // l=<n>
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub enum Timestamp {
-    #[default]
-    Now,  // t=<now>
-    Exact(u64),  // t=<n>
-}
-
-pub struct SigningRequest<T> {
-    // Key
-    pub signing_key: T,
-
-    // Signature
-    pub signature_alg: SignatureAlgorithm,
-    pub canonicalization: Canonicalization,
-    pub signed_headers: Vec<FieldName>,  // treated as a set, must not contain ;
-    pub oversigned_headers: Vec<FieldName>,  // treated as a set, must not contain ;
-    pub domain: DomainName,
-    pub user_id: Option<Identity>,
-    pub selector: Selector,
-    pub body_length: BodyLength,
-    pub copy_headers: bool,  // copy all headers used to create the signature in z= tag
-    pub timestamp: Option<Timestamp>,
-    pub valid_duration: Option<Duration>,
-    pub header_name: String,  // ~"DKIM-Signature"
-
-    // Additional config
-    pub line_width: usize,
-    //   - order of tags: d=, s=, a=, bh=, b=, t=, x= ...
-}
-
-impl<T> SigningRequest<T> {
-    pub fn new(
-        domain: DomainName,
-        selector: Selector,
-        signature_alg: SignatureAlgorithm,
-        signing_key: T,
-    ) -> Self {
-        let user_id = None;
-        let signed_headers = signature::get_default_signed_headers();
-        let oversigned_headers = vec![];
-
-        Self {
-            signing_key,
-
-            signature_alg,
-            canonicalization: Default::default(),
-            signed_headers,
-            oversigned_headers,
-            domain,
-            user_id,
-            selector,
-            body_length: BodyLength::All,
-            copy_headers: false,
-            timestamp: Some(Timestamp::Now),
-            valid_duration: Some(Duration::from_secs(60 * 60 * 24 * 5)),  // five days
-            header_name: DKIM_SIGNATURE_NAME.into(),
-
-            line_width: LINE_WIDTH,
-        }
-    }
-}
+use crate::{
+    crypto::SigningKey,
+    header::HeaderFields,
+    message_hash::{BodyHasher, BodyHasherBuilder, BodyHasherStance},
+    signature::DkimSignature,
+};
 
 struct SigningTask<T> {
-    request: SigningRequest<T>,
+    request: SignRequest<T>,
     error: Option<SignerError>,
 }
 
+/// An error that occurs when using a [`Signer`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum SignerError {
-    // Conversion from or to a requested integer data type cannot be supported
-    // in the implementation or on the current platform.
+    /// Conversion from or to a requested integer data type cannot be supported
+    /// in this implementation or on the current platform.
     Overflow,
     TooManyRequests,
+    EmptyRequests,
+    FromHeaderNotSigned,
     InvalidSignedFieldName,
     MissingFromHeader,
     KeyTypeMismatch,
@@ -101,22 +37,22 @@ pub enum SignerError {
     SigningFailure,
 }
 
+// TODO does this have to be a separate type? introduce `SigningResults`?
 #[derive(Debug, PartialEq)]
 pub struct SigningResult {
     pub status: SigningStatus,
-    // ...
 }
 
-// TODO this is like Result? revisit
+// TODO revisit
 #[derive(Debug, PartialEq)]
 pub enum SigningStatus {
     Success {
-        // boxed b/c of enum variant size ...
+        // boxing suggested by clippy because of of enum variant size; reconsider
         signature: Box<DkimSignature>,
         // Usage: header_name and header_value are meant to be concatenated with
         // only an intervening colon, no additional whitespace! this is vital for
-        // "simple" header canonicalization where whitespace changes are not allowed!
-        // TODO perhaps make a method format_header(&self) -> String { format!("{name}:{value}") }
+        // "simple" header canonicalization where whitespace changes are not allowed
+        // TODO provide a method format_header(&self) -> String { format!("{name}:{value}") }
         header_name: String,
         header_value: String,
     },
@@ -125,8 +61,9 @@ pub enum SigningStatus {
     },
 }
 
+/// A signer for an email message.
 pub struct Signer<T> {
-    tasks: Vec<SigningTask<T>>,  // non-empty (?)
+    tasks: Vec<SigningTask<T>>,  // non-empty
     headers: HeaderFields,
     body_hasher: BodyHasher,
 }
@@ -135,19 +72,17 @@ impl<T> Signer<T>
 where
     T: AsRef<SigningKey>,
 {
+    /// Prepares a message signing process.
     pub fn prepare_signing<I>(
         requests: I,
         headers: HeaderFields,
-        // + global config, such as timeouts
     ) -> Result<Self, SignerError>
     where
-        I: IntoIterator<Item = SigningRequest<T>>,
+        I: IntoIterator<Item = SignRequest<T>>,
     {
         if !headers.as_ref().iter().any(|(name, _)| *name == "From") {
             return Err(SignerError::MissingFromHeader);
         }
-
-        // check signing request, eg must sign From header etc.
 
         let mut tasks = vec![];
         let mut body_hasher = BodyHasherBuilder::new(false);
@@ -157,41 +92,22 @@ where
                 return Err(SignerError::TooManyRequests);
             }
 
-            // must not attempt to sign header names containing ';' (incompatible with DKIM-Signature)
-            if request.signed_headers.iter().any(|name| name.as_ref().contains(';'))
-                || request.oversigned_headers.iter().any(|name| name.as_ref().contains(';'))
-            {
-                let task = SigningTask {
-                    request,
-                    error: Some(SignerError::InvalidSignedFieldName),
-                };
-
-                tasks.push(task);
-
-                continue;
-            }
+            // TODO check that From is in signed headers, does not contain ; here already?
 
             // TODO check user id domain is subdomain of signing domain
 
-            // Calculate desired body length limit
-            let body_length = match request.body_length {
-                BodyLength::All | BodyLength::OnlyMessageLength => None,
-                BodyLength::Exact(n) => {
-                    match n.try_into() {
-                        Ok(n) => Some(n),
-                        Err(_) => {
-                            let task = SigningTask {
-                                request,
-                                error: Some(SignerError::Overflow),
-                            };
-                            tasks.push(task);
-                            continue;
-                        }
-                    }
+            let body_length = match request::convert_body_length(request.body_length) {
+                Ok(b) => b,
+                Err(_) => {
+                    let task = SigningTask {
+                        request,
+                        error: Some(SignerError::Overflow),
+                    };
+                    tasks.push(task);
+                    continue;
                 }
             };
-
-            let hash_alg = request.signature_alg.to_hash_algorithm();
+            let hash_alg = request.algorithm.hash_algorithm();
             let canon_kind = request.canonicalization.body;
             body_hasher.register_canonicalization(body_length, hash_alg, canon_kind);
 
@@ -200,7 +116,9 @@ where
             tasks.push(task);
         }
 
-        // TODO allow empty tasks?
+        if tasks.is_empty() {
+            return Err(SignerError::EmptyRequests);
+        }
 
         Ok(Self {
             tasks,
@@ -209,19 +127,22 @@ where
         })
     }
 
-    pub fn body_chunk(&mut self, chunk: &[u8]) -> BodyCanonStatus {
+    /// Processes a chunk of the message body.
+    ///
+    /// Note that the chunk is canonicalised and hashed, but not otherwise
+    /// retained in memory.
+    pub fn body_chunk(&mut self, chunk: &[u8]) -> BodyHasherStance {
         self.body_hasher.hash_chunk(chunk)
     }
 
     // Doesn't actually need async, but may use it to introduce artificial await points?
     pub async fn finish(self) -> Vec<SigningResult> {
-        let mut result = vec![];
-
         let hasher_results = self.body_hasher.finish();
+
+        let mut result = vec![];
 
         for task in self.tasks {
             if let Some(error) = task.error {
-                // failed task
                 result.push(SigningResult {
                     status: SigningStatus::Error { error },
                 });
@@ -230,242 +151,11 @@ where
 
             let request = task.request;
 
-            let algorithm = request.signature_alg;
-            let canonicalization = request.canonicalization;
+            let signing_result = sign::perform_signing(request, &self.headers, &hasher_results).await;
 
-            // calculate body hash
-
-            let body_length = match request.body_length {
-                BodyLength::All | BodyLength::OnlyMessageLength => None,
-                BodyLength::Exact(n) => {
-                    // cannot failed thanks to earlier input validation
-                    Some(n.try_into().expect("unsupported integer conversion"))
-                }
-            };
-            let hash_alg = algorithm.to_hash_algorithm();
-            let key = (body_length, hash_alg, canonicalization.body);
-
-            let (h, &final_len) = match hasher_results.get(&key).unwrap() {
-                Ok((h, final_len)) => (h, final_len),
-                Err(BodyHasherError::InsufficientInput) => {
-                    result.push(SigningResult {
-                        status: SigningStatus::Error {
-                            error: SignerError::InsufficientBodyLength,
-                        },
-                    });
-                    continue;
-                }
-                Err(BodyHasherError::ForbiddenTruncation) => {
-                    panic!("unexpected canonicalization error");
-                }
-            };
-
-            let body_hash = h.clone();
-            let body_length = match request.body_length {
-                BodyLength::All => None,
-                BodyLength::OnlyMessageLength | BodyLength::Exact(_) => {
-                    match final_len.try_into() {
-                        Ok(n) => Some(n),
-                        Err(_) => {
-                            result.push(SigningResult {
-                                status: SigningStatus::Error {
-                                    error: SignerError::Overflow,
-                                },
-                            });
-                            continue;
-                        }
-                    }
-                }
-            };
-
-            // select and canonicalize headers
-
-            // TODO
-            let signed_headers = signature::select_signed_headers(
-                &request.signed_headers,
-                &request.oversigned_headers,
-                &self.headers,
-            );
-
-            let header_canonicalization = canonicalization.header;
-
-            let headers = canonicalize::canon_headers(
-                header_canonicalization,
-                &self.headers,
-                signed_headers.as_slice(),
-            );
-
-            // calculate timestamp and expiration
-
-            // TODO
-            let (timestamp, expiration) = match request.timestamp {
-                Some(Timestamp::Now) => {
-                    let now = SystemTime::now();
-                    let timestamp = now
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .map_or(0, |t| t.as_secs());
-                    let expiration = request.valid_duration.map(|e| {
-                        let x = now + e;
-                        x.duration_since(SystemTime::UNIX_EPOCH)
-                            .map_or(0, |t| t.as_secs())
-                    });
-                    (Some(timestamp), expiration)
-                }
-                Some(Timestamp::Exact(_t)) => {
-                    todo!();
-                }
-                _ => (None, None),
-            };
-
-            // calculate z= tag copied headers
-
-            let copied_headers = if request.copy_headers {
-                Some(Box::from(prepare_copied_headers(
-                    &self.headers,
-                    &request.signed_headers,
-                    &request.oversigned_headers,
-                )))
-            } else {
-                None
-            };
-
-            // prepare complete formatted signature header with body hash except with contents of b= tag
-
-            // TODO think again about proper validation of all inputs here
-            let mut sig = DkimSignature {
-                algorithm,
-                signature_data: Default::default(),  // placeholder, to be replaced
-                body_hash,
-                canonicalization: request.canonicalization,
-                domain: request.domain.clone(),
-                signed_headers: signed_headers.into(),
-                user_id: request.user_id.clone(),
-                selector: request.selector,
-                body_length,
-                timestamp,
-                expiration,
-                copied_headers,
-            };
-
-            let signing_key = request.signing_key.as_ref();
-
-            let line_width = request.line_width;
-            let hdr_name = &request.header_name;
-            let b_len = estimate_b_tag_length(signing_key);
-
-            let (mut formatted_header, insertion_index) =
-                sig.format_without_signature(line_width, b_len);
-
-            // compute data hash, consisting of hashed headers plus formatted dkim-sig header
-
-            let canon_header =
-                signature::canon_dkim_header(header_canonicalization, hdr_name, &formatted_header);
-
-            let key_type = algorithm.to_key_type();
-            let data_hash = crypto::data_hash_digest(hash_alg, &headers, &canon_header);
-
-            // perform signing
-
-            // note artificial await point here, yield to runtime if many signatures
-            sig.signature_data = match sign_hash(signing_key, key_type, hash_alg, &data_hash).await
-            {
-                Ok(signature_data) => {
-                    trace!("successfully signed");
-                    signature_data.into_boxed_slice()
-                }
-                Err(_e) => {
-                    trace!("signing failed");
-                    result.push(SigningResult {
-                        status: SigningStatus::Error {
-                            error: SignerError::SigningFailure,
-                        },
-                    });
-                    continue;
-                }
-            };
-
-            // insert signature into formatted dkim-sig header, store
-
-            signature::insert_signature_data(
-                &mut formatted_header,
-                insertion_index,
-                &sig.signature_data[..],
-                line_width,
-            );
-
-            result.push(SigningResult {
-                status: SigningStatus::Success {
-                    signature: Box::new(sig),
-                    header_name: hdr_name.into(),
-                    header_value: formatted_header,
-                },
-            });
+            result.push(signing_result);
         }
 
         result
-    }
-}
-
-fn prepare_copied_headers(
-    headers: &HeaderFields,
-    signed_headers: &[FieldName],
-    oversigned_headers: &[FieldName],
-) -> Vec<(FieldName, Box<[u8]>)> {
-    // TODO inefficient
-    let mut v = vec![];
-    for (name, value) in headers.as_ref() {
-        if signed_headers.contains(name) || oversigned_headers.contains(name) {
-            v.push((name.clone(), value.as_ref().into()));
-        }
-    }
-    v
-}
-
-fn estimate_b_tag_length(signing_key: &SigningKey) -> usize {
-    let n = signing_key.signature_length();
-    // n is the signature length in bytes, now compute the length of the
-    // base64-encoded value:
-    (n + 2) / 3 * 4
-}
-
-async fn sign_hash(
-    signing_key: &SigningKey,
-    key_type: KeyType,
-    hash_alg: HashAlgorithm,
-    data_hash: &[u8],
-) -> Result<Vec<u8>, SignerError> {
-    match signing_key {
-        SigningKey::Rsa(k) => {
-            if key_type != KeyType::Rsa {
-                return Err(SignerError::KeyTypeMismatch);
-            }
-
-            match crypto::sign_rsa(hash_alg, k, data_hash) {
-                Ok(s) => {
-                    trace!("RSA signing successful");
-                    Ok(s)
-                }
-                Err(e) => {
-                    trace!("RSA signing failed: {e}");
-                    Err(SignerError::SigningFailure)
-                }
-            }
-        }
-        SigningKey::Ed25519(k) => {
-            if key_type != KeyType::Ed25519 {
-                return Err(SignerError::KeyTypeMismatch);
-            }
-
-            match crypto::sign_ed25519(k, data_hash) {
-                Ok(s) => {
-                    trace!("Ed25519 signing successful");
-                    Ok(s)
-                }
-                Err(e) => {
-                    trace!("Ed25519 signing failed: {e}");
-                    Err(SignerError::SigningFailure)
-                }
-            }
-        }
     }
 }

@@ -7,13 +7,6 @@ use crate::{
 use bstr::ByteSlice;
 use std::collections::HashSet;
 
-// TODO rename BodyHashStatus, move elsewhere
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum BodyCanonStatus {
-    NotDone,
-    Done,
-}
-
 const SP: u8 = b' ';
 const CR: u8 = b'\r';
 const LF: u8 = b'\n';
@@ -30,6 +23,7 @@ enum CanonState {
     Byte,
 }
 
+/// A canonicalizer using the body canonicalization algorithm.
 pub struct BodyCanonicalizer {
     kind: CanonicalizationAlgorithm,
     state: CanonState,
@@ -260,9 +254,8 @@ impl BodyCanonicalizer {
     }
 }
 
-// TODO with cache?
-// canon_headers_relaxed: &mut HashMap<usize, Vec<u8>>,
-pub fn canon_headers(
+/// Produces the header canonicalization result for some header fields.
+pub fn canonicalize_headers(
     canon_alg: CanonicalizationAlgorithm,
     headers: &HeaderFields,
     selected_headers: &[FieldName],
@@ -279,7 +272,7 @@ pub fn canon_headers(
             .filter(|(i, _)| !processed_indexes.contains(i))
         {
             if name == selected_header {
-                canon_header(&mut result, canon_alg, name, val);
+                canonicalize_header(&mut result, canon_alg, name, val);
 
                 result.extend(CRLF);
 
@@ -293,30 +286,31 @@ pub fn canon_headers(
     result
 }
 
-pub fn canon_header(
+/// Canonicalizes a header field into some result vector.
+pub fn canonicalize_header(
     result: &mut Vec<u8>,
-    canon_alg: CanonicalizationAlgorithm,
+    algorithm: CanonicalizationAlgorithm,
     name: impl AsRef<str>,
-    val: impl AsRef<[u8]>,
+    value: impl AsRef<[u8]>,
 ) {
     let name = name.as_ref();
-    let val = val.as_ref();
+    let value = value.as_ref();
 
-    match canon_alg {
+    match algorithm {
         CanonicalizationAlgorithm::Simple => {
             result.extend(name.bytes());
             result.push(b':');
-            result.extend(val);
+            result.extend(value);
         }
         CanonicalizationAlgorithm::Relaxed => {
             result.extend(name.to_ascii_lowercase().bytes());
             result.push(b':');
-            canon_header_relaxed(result, val);
+            canonicalize_header_relaxed(result, value);
         }
     }
 }
 
-fn canon_header_relaxed(canon_headers: &mut Vec<u8>, value: &[u8]) {
+fn canonicalize_header_relaxed(canon_headers: &mut Vec<u8>, value: &[u8]) {
     fn is_space(c: char) -> bool {
         matches!(c, ' ' | '\t' | '\r' | '\n')
     }
@@ -347,7 +341,7 @@ mod tests {
     use bstr::BStr;
 
     #[test]
-    fn canon_headers_relaxed_ok() {
+    fn canonicalize_headers_relaxed_ok() {
         let headers = HeaderFields::from_vec(vec![
             ("from".to_owned(), b" Good \t ".to_vec()),
             ("to".to_owned(), b" see   me".to_vec()),
@@ -363,7 +357,7 @@ mod tests {
         ];
 
         assert_eq!(
-            BStr::new(&canon_headers(
+            BStr::new(&canonicalize_headers(
                 CanonicalizationAlgorithm::Relaxed,
                 &headers,
                 &selected_headers,

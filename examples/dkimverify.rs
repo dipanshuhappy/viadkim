@@ -1,7 +1,7 @@
 use std::{env, process};
-use tokio::fs;
+use tokio::io::{self, AsyncReadExt};
 use trust_dns_resolver::TokioAsyncResolver;
-use viadkim::{HeaderFields, Verifier};
+use viadkim::{header, verifier::Config, Verifier};
 
 #[tokio::main]
 async fn main() {
@@ -9,49 +9,35 @@ async fn main() {
 
     let mut args = env::args();
 
-    let path = match (args.next().as_deref(), args.next()) {
-        (_, Some(path)) => path,
+    match (args.next().as_deref(), args.next()) {
+        (_, None) => {}
         (program, ..) => {
-            eprintln!("usage: {} <path>", program.unwrap_or("dkimverify"));
+            eprintln!("usage: {}", program.unwrap_or("dkimverify"));
             process::exit(1);
         }
-    };
-
-    let s = fs::read_to_string(path).await.unwrap();
-
-    let s = s.replace('\n', "\r\n");
-
-    let (header, body) = s.split_once("\r\n\r\n").unwrap();
-
-    // TODO
-    let mut headers = vec![];
-    let mut current_line = "".to_owned();
-    for (i, header_line) in header.lines().enumerate() {
-        if header_line.starts_with(' ') || header_line.starts_with('\t') {
-            current_line.push_str("\r\n");
-            current_line.push_str(header_line);
-        } else {
-            if i != 0 {
-                let s = std::mem::take(&mut current_line);
-                let (name, value) = s.split_once(':').unwrap();
-                headers.push((name.to_owned(), value.as_bytes().to_vec()));
-            }
-            current_line.push_str(header_line);
-        }
     }
-    let s = std::mem::take(&mut current_line);
-    let (name, value) = s.split_once(':').unwrap();
-    headers.push((name.to_owned(), value.as_bytes().to_vec()));
 
-    let headers = HeaderFields::from_vec(headers).unwrap();
+    let mut msg = String::new();
+    let n = io::stdin().read_to_string(&mut msg).await.unwrap();
+    assert!(n > 0, "empty message on stdin");
 
+    let msg = msg.replace('\n', "\r\n");
+
+    let (header, body) = msg.split_once("\r\n\r\n").unwrap();
+
+    let headers = header::parse_header(header).unwrap();
     // dbg!(&headers);
 
     let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default()).unwrap();
 
-    let config = Default::default();
+    let config = Config {
+        fail_if_expired: false,
+        ..Default::default()
+    };
 
-    let mut verifier = Verifier::process_headers(&resolver, &headers, &config).await;
+    let mut verifier = Verifier::process_headers(&resolver, &headers, &config)
+        .await
+        .unwrap();
 
     let _ = verifier.body_chunk(body.as_bytes());
 

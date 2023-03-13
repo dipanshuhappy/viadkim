@@ -7,7 +7,10 @@ use crate::{
         TagList, TagSpec,
     },
 };
-use std::str::FromStr;
+use std::{
+    fmt::{self, Display, Formatter},
+    str::FromStr,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ServiceType {
@@ -26,17 +29,37 @@ pub enum Flags {
 #[derive(Debug, PartialEq, Eq)]
 pub enum DkimKeyRecordParseError {
     RecordSyntax,  // fundamental syntax errors such as DNS record format or invalid UTF-8 data
+    InvalidQuotedPrintable,
+    InvalidBase64,
     TagListSyntax,
     UnsupportedVersion,
     MisplacedVersionTag,
     UnsupportedKeyType,
     NoSupportedHashAlgorithms,
-    ValueSyntax,
     RevokedKey,
     MissingKeyTag,
     ServiceTypesEmpty,
 }
 
+impl Display for DkimKeyRecordParseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RecordSyntax => write!(f, "ill-formed key record"),
+            Self::InvalidQuotedPrintable => write!(f, "invalid Quoted-Printable string"),
+            Self::InvalidBase64 => write!(f, "invalid Base64 string"),
+            Self::TagListSyntax => write!(f, "invalid tag-list"),
+            Self::UnsupportedVersion => write!(f, "unsupported version"),
+            Self::MisplacedVersionTag => write!(f, "v= tag not initial"),
+            Self::UnsupportedKeyType => write!(f, "unsupported key type"),
+            Self::NoSupportedHashAlgorithms => write!(f, "no supported hash algorithms"),
+            Self::RevokedKey => write!(f, "key revoked"),
+            Self::MissingKeyTag => write!(f, "p= tag missing"),
+            Self::ServiceTypesEmpty => write!(f, "service types empty"),
+        }
+    }
+}
+
+/// A DKIM public key record.
 #[derive(Debug, PartialEq, Eq)]
 pub struct DkimKeyRecord {
     pub hash_algorithms: Box<[HashAlgorithm]>,  // non-empty
@@ -45,21 +68,8 @@ pub struct DkimKeyRecord {
     pub key_data: Box<[u8]>,
     pub service_types: Box<[ServiceType]>,  // non-empty
     pub flags: Box<[Flags]>,
-}
 
-impl FromStr for DkimKeyRecord {
-    type Err = DkimKeyRecordParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let tag_list = match TagList::from_str(s) {
-            Ok(r) => r,
-            Err(_e) => {
-                return Err(DkimKeyRecordParseError::TagListSyntax);
-            }
-        };
-
-        Self::from_tag_list(&tag_list)
-    }
+    // TODO make available "unknown" tags?
 }
 
 impl DkimKeyRecord {
@@ -83,16 +93,18 @@ impl DkimKeyRecord {
                 }
                 "h" => {
                     hash_algorithms.clear();
-                    for v in parse_colon_separated_tag_value(value) {
-                        if v.eq_ignore_ascii_case("sha256") {
+
+                    for s in parse_colon_separated_tag_value(value) {
+                        if s.eq_ignore_ascii_case("sha256") {
                             hash_algorithms.push(HashAlgorithm::Sha256);
                         } else {
                             #[cfg(feature = "sha1")]
-                            if v.eq_ignore_ascii_case("sha1") {
+                            if s.eq_ignore_ascii_case("sha1") {
                                 hash_algorithms.push(HashAlgorithm::Sha1);
                             }
                         }
                     }
+
                     if hash_algorithms.is_empty() {
                         return Err(DkimKeyRecordParseError::NoSupportedHashAlgorithms);
                     }
@@ -105,49 +117,63 @@ impl DkimKeyRecord {
                     }
                 }
                 "n" => {
-                    let v = parse_qp_section_tag_value(value)
-                        .map_err(|_| DkimKeyRecordParseError::ValueSyntax)?;
-                    // only UTF-8 supported:
-                    let val = String::from_utf8_lossy(&v);
-                    notes = Some(val.into());
+                    let s = parse_qp_section_tag_value(value)
+                        .map_err(|_| DkimKeyRecordParseError::InvalidQuotedPrintable)?;
+
+                    // §3.6.1: ‘Notes that might be of interest to a human’. It
+                    // seems therefore justified to support only UTF-8 strings.
+                    let value = String::from_utf8_lossy(&s);
+
+                    notes = Some(value.into());
                 }
                 "p" => {
                     if value.is_empty() {
                         return Err(DkimKeyRecordParseError::RevokedKey);
                     }
-                    let v = parse_base64_tag_value(value)
-                        .map_err(|_| DkimKeyRecordParseError::ValueSyntax)?;
-                    key_data = Some(v.into());
+
+                    let s = parse_base64_tag_value(value)
+                        .map_err(|_| DkimKeyRecordParseError::InvalidBase64)?;
+
+                    key_data = Some(s.into());
                 }
                 "s" => {
                     let mut st = vec![];
-                    for v in parse_colon_separated_tag_value(value) {
-                        if v == "*" {
+
+                    for s in parse_colon_separated_tag_value(value) {
+                        if s == "*" {
                             st.push(ServiceType::Any);
-                        } else if v.eq_ignore_ascii_case("email") {
+                        } else if s.eq_ignore_ascii_case("email") {
                             st.push(ServiceType::Email);
                         } else {
-                            st.push(ServiceType::Other(v.into()));
+                            // TODO disallow empty flags ("... ; s= ; ...")
+                            st.push(ServiceType::Other(s.into()));
                         }
                     }
+
                     if st.is_empty() {
                         return Err(DkimKeyRecordParseError::ServiceTypesEmpty);
                     }
+
                     service_types = st;
                 }
                 "t" => {
                     let mut fs = vec![];
-                    for v in parse_colon_separated_tag_value(value) {
-                        if v.eq_ignore_ascii_case("y") {
+
+                    for s in parse_colon_separated_tag_value(value) {
+                        if s.eq_ignore_ascii_case("y") {
                             fs.push(Flags::Testing);
-                        } else if v.eq_ignore_ascii_case("s") {
+                        } else if s.eq_ignore_ascii_case("s") {
                             fs.push(Flags::NoSubdomains);
                         } else {
-                            fs.push(Flags::Other(v.into()));
+                            // TODO disallow empty flags ("... ; t= ; ...")
+                            fs.push(Flags::Other(s.into()));
                         }
                     }
+
                     flags = fs;
                 }
+                // §3.6.1: ‘Other tags MAY be present and MUST be ignored by any
+                // implementation that does not understand them.’
                 _ => {}
             }
         }
@@ -162,6 +188,21 @@ impl DkimKeyRecord {
             service_types: service_types.into(),
             flags: flags.into(),
         })
+    }
+}
+
+impl FromStr for DkimKeyRecord {
+    type Err = DkimKeyRecordParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let tag_list = match TagList::from_str(s) {
+            Ok(r) => r,
+            Err(_e) => {
+                return Err(DkimKeyRecordParseError::TagListSyntax);
+            }
+        };
+
+        Self::from_tag_list(&tag_list)
     }
 }
 

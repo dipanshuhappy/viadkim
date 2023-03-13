@@ -1,30 +1,102 @@
 use crate::{
-    dqp,
     header::FieldName,
-    signature::{encode_binary, CanonicalizationAlgorithm, DkimSignature, DKIM_SIGNATURE_NAME},
-    util::CanonicalStr,
+    quoted_printable,
+    signature::{
+        Canonicalization, CanonicalizationAlgorithm, DkimSignature, DomainName, Identity, Selector,
+        SignatureAlgorithm, DKIM_SIGNATURE_NAME,
+    },
+    util::{self, CanonicalStr},
 };
 use std::{fmt::Write, iter};
 
-// careful: formatting works on characters not bytes!
+// careful with offsets: formatting works on characters not bytes!
 
-pub fn format_without_signature(sig: &DkimSignature, width: usize, b_tag_len: usize) -> (String, usize) {
-    let start_i = DKIM_SIGNATURE_NAME.len() + 1;  // plus ":"
+#[derive(Clone, Eq, PartialEq)]
+pub struct UnsignedDkimSignature {
+    pub algorithm: SignatureAlgorithm,
+    pub body_hash: Box<[u8]>,
+    pub canonicalization: Canonicalization,
+    pub domain: DomainName,
+    pub signed_headers: Box<[FieldName]>,
+    pub user_id: Option<Identity>,
+    pub body_length: Option<u64>,
+    pub selector: Selector,
+    pub timestamp: Option<u64>,
+    pub expiration: Option<u64>,
+    pub copied_headers: Option<Box<[(FieldName, Box<[u8]>)]>>,
+}
+
+impl UnsignedDkimSignature {
+    // Returns the formatted signature without the b= value, and the index where
+    // the b= value is to be inserted.
+    // width: *char-based* line width
+    // b_tag_len: *char-based* b= tag value length
+    pub fn format_without_signature(
+        &self,
+        header_name: &str,
+        width: usize,
+        b_tag_len: usize,
+    ) -> (String, usize) {
+        format_without_signature(self, header_name, width, b_tag_len)
+    }
+
+    pub fn into_signature(self, signature_data: Box<[u8]>) -> DkimSignature {
+        DkimSignature {
+            algorithm: self.algorithm,
+            signature_data,
+            body_hash: self.body_hash,
+            canonicalization: self.canonicalization,
+            domain: self.domain,
+            signed_headers: self.signed_headers,
+            user_id: self.user_id,
+            body_length: self.body_length,
+            selector: self.selector,
+            timestamp: self.timestamp,
+            expiration: self.expiration,
+            copied_headers: self.copied_headers,
+        }
+    }
+}
+
+pub const LINE_WIDTH: usize = 78;
+
+fn format_without_signature(
+    sig: &UnsignedDkimSignature,
+    header_name: &str,
+    width: usize,
+    b_tag_len: usize,
+) -> (String, usize) {
+    debug_assert!(header_name.eq_ignore_ascii_case(DKIM_SIGNATURE_NAME));
+
+    let start_i = header_name.len() + 1;  // plus ":"
 
     let mut result = String::new();
     let mut i = start_i;
 
     format_tag_into_string(&mut result, width, &mut i, "v", "1");
 
-    // These cannot fail, domain and selector are guaranteed to be convertible to U-label form
-    // See also RFC 8616.
-    let (domain, _) = idna::domain_to_unicode(sig.domain.as_ref());
+    // For the U-label form conversion, see RFC 8616.
+    let domain = sig.domain.to_unicode();
     format_tag_into_string(&mut result, width, &mut i, "d", &domain);
 
-    let (selector, _) = idna::domain_to_unicode(sig.selector.as_ref());
+    let selector = sig.selector.to_unicode();
     format_tag_into_string(&mut result, width, &mut i, "s", &selector);
 
-    // TODO i= ident, also in unicode form if possible
+    if let Some(Identity { local_part, domain_part }) = &sig.user_id {
+        let d = domain_part.to_unicode();
+
+        // in i= value substitute =3B for ; and =20 for space
+        // (both of which are allowed to appear in the identity's local-part!)
+        // TODO revisit, inefficient
+        let l = match local_part {
+            Some(x) => Some(x.replace(';', "=3B").replace(' ', "=20")),
+            None => None,
+        };
+        let l = l.as_deref().unwrap_or("");
+
+        let identity = format!("{l}@{d}");
+        format_tag_into_string(&mut result, width, &mut i, "i", &identity);
+    }
 
     format_tag_into_string(&mut result, width, &mut i, "a", sig.algorithm.canonical_str());
 
@@ -57,7 +129,7 @@ pub fn format_without_signature(sig: &DkimSignature, width: usize, b_tag_len: us
 
     format_signed_headers_into_string(&mut result, width, &mut i, &sig.signed_headers);
 
-    let bh = encode_binary(&sig.body_hash);
+    let bh = util::encode_binary(&sig.body_hash);
     format_body_hash_into_string(&mut result, width, &mut i, &bh);
 
     if i + 4 <= width {  // at least one additional char behind =
@@ -170,7 +242,7 @@ fn format_body_hash_into_string(result: &mut String, width: usize, i: &mut usize
 
     format_chunks_into_string(result, width, i, value);
 
-    // if final chunk makes line === 78 chars long, the final ; will be appended nevertheless (=> width == 79)
+    // if final chunk makes line 78 chars long, the final ; will be appended nevertheless (=> width == 79)
     result.push(';');
     *i += 1;
 }
@@ -202,7 +274,7 @@ fn format_copied_headers_into_string(
     }
     write!(result, "z={first_name}:").unwrap();
 
-    let val = dqp::dqp_encode(val, true);
+    let val = quoted_printable::dqp_encode(val, true);
 
     format_chunks_into_string(result, width, i, &val);
 
@@ -227,7 +299,7 @@ fn format_copied_headers_into_string(
             *i = namelen + 1;
         }
 
-        let val = dqp::dqp_encode(val, true);
+        let val = quoted_printable::dqp_encode(val, true);
 
         format_chunks_into_string(result, width, i, &val);
     }
@@ -277,4 +349,28 @@ pub fn format_chunks_into_string(output: &mut String, width: usize, i: &mut usiz
         output.push_str(chunk);
         *i = chunk.chars().count() + 1;
     }
+}
+
+pub fn insert_signature_data(
+    formatted_header: &mut String,
+    insertion_index: usize,
+    signature_data: &[u8],
+    line_width: usize,
+) {
+    debug_assert!(insertion_index <= formatted_header.len());
+
+    let s = util::encode_binary(signature_data);
+    // note s contains only ASCII now
+
+    let formatted_header_pre = &formatted_header[..insertion_index];
+
+    let mut len = match formatted_header_pre.rsplit("\r\n").next() {
+        Some(last_line) => last_line.chars().count(),
+        None => DKIM_SIGNATURE_NAME.len() + formatted_header_pre.chars().count() + 1,
+    };
+
+    let mut result = String::with_capacity(s.len());
+    format_chunks_into_string(&mut result, line_width, &mut len, &s);
+
+    formatted_header.insert_str(insertion_index, &result);
 }

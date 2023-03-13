@@ -3,21 +3,23 @@
 mod header;
 mod lookup;
 mod query;
+mod verify;
 
 pub use lookup::LookupTxt;
 
 use crate::{
-    body_hash::{body_hasher_key, BodyHasher, BodyHasherBuilder, BodyHasherError},
-    canonicalize::BodyCanonStatus,
     crypto::VerificationError,
     header::{FieldName, HeaderFields},
-    signature::{self, DkimSignature, DkimSignatureError, DkimSignatureErrorKind},
-    util::CanonicalStr,
+    message_hash::{
+        body_hasher_key, BodyHasher, BodyHasherBuilder, BodyHasherError, BodyHasherStance,
+    },
+    signature::{DkimSignature, DkimSignatureError, DkimSignatureErrorKind},
+    util::{self, CanonicalStr},
     verifier::{header::HeaderVerifier, query::Queries},
 };
 use std::{
     fmt::{self, Display, Formatter},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tracing::trace;
 
@@ -41,6 +43,33 @@ pub struct Config {
     /// validate. In other words, signatures that cover only part of the message
     /// body are not accepted.
     pub forbid_partially_signed_body: bool,
+
+    /// When this flag is set, an expired DKIM signature (x=) will not validate.
+    pub fail_if_expired: bool,
+
+    /// When this flag is set, a DKIM signature with a timestamp in the future
+    /// (t=) will not validate.
+    pub fail_if_in_future: bool,
+
+    /// Tolerance applied to time values when checking signature expiration or
+    /// timestamp validity, to allow for clock drift. Resolution is in seconds.
+    pub time_tolerance: Duration,
+
+    /// The `SystemTime` value to use as the instant ‘now’.
+    pub fixed_system_time: Option<SystemTime>,
+
+    // TODO
+    // min_key_size: u32,   // else PolicyError ...
+}
+
+impl Config {
+    fn current_timestamp(&self) -> u64 {
+        self.fixed_system_time
+            .unwrap_or_else(SystemTime::now)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
 }
 
 impl Default for Config {
@@ -50,6 +79,10 @@ impl Default for Config {
             max_signatures: 10,
             required_signed_headers: vec![],
             forbid_partially_signed_body: false,
+            fail_if_expired: true,
+            fail_if_in_future: true,
+            time_tolerance: Duration::from_secs(30),
+            fixed_system_time: None,
         }
     }
 }
@@ -58,6 +91,8 @@ impl Default for Config {
 pub enum PolicyError {
     RequiredHeadersNotSigned,
     ForbidPartiallySignedBody,
+    SignatureExpired,
+    TimestampInFuture,
 }
 
 impl Display for PolicyError {
@@ -65,6 +100,8 @@ impl Display for PolicyError {
         match self {
             Self::RequiredHeadersNotSigned => write!(f, "headers required to be signed were not signed"),
             Self::ForbidPartiallySignedBody => write!(f, "partial body signing not acceptable"),
+            Self::SignatureExpired => write!(f, "signature expired"),
+            Self::TimestampInFuture => write!(f, "timestamp in future"),
         }
     }
 }
@@ -76,6 +113,7 @@ pub struct VerificationResult {
     pub status: VerificationStatus,
     pub testing: bool,  // t=y in record
     pub key_size: Option<usize>,
+    // TODO or share entire DkimKeyRecord instead?
 }
 
 // TODO RFC 6376 vs RFC 8601:
@@ -96,6 +134,7 @@ impl VerificationStatus {
             VerificationStatus::Failure(error) => match error {
                 WrongKeyType
                 | KeyRecordSyntax
+                | KeyRevoked
                 | DisallowedHashAlgorithm
                 | DisallowedServiceType
                 | DomainMismatch
@@ -110,16 +149,11 @@ impl VerificationStatus {
                     | DkimSignatureErrorKind::MissingAlgorithmTag
                     | DkimSignatureErrorKind::MissingSignatureTag
                     | DkimSignatureErrorKind::MissingBodyHashTag
-                    | DkimSignatureErrorKind::InvalidDomain
                     | DkimSignatureErrorKind::MissingDomainTag
                     | DkimSignatureErrorKind::SignedHeadersEmpty
                     | DkimSignatureErrorKind::FromHeaderNotSigned
                     | DkimSignatureErrorKind::MissingSignedHeadersTag
-                    | DkimSignatureErrorKind::InvalidBodyLength
-                    | DkimSignatureErrorKind::InvalidSelector
                     | DkimSignatureErrorKind::MissingSelectorTag
-                    | DkimSignatureErrorKind::InvalidTimestamp
-                    | DkimSignatureErrorKind::InvalidExpiration
                     | DkimSignatureErrorKind::DomainMismatch
                     | DkimSignatureErrorKind::ExpirationNotAfterTimestamp
                     | DkimSignatureErrorKind::InvalidUserId => AuthResultsKind::Permerror,
@@ -127,7 +161,15 @@ impl VerificationStatus {
                     | DkimSignatureErrorKind::UnsupportedAlgorithm
                     | DkimSignatureErrorKind::UnsupportedCanonicalization
                     | DkimSignatureErrorKind::QueryMethodsNotSupported
-                    | DkimSignatureErrorKind::ValueSyntax
+                    | DkimSignatureErrorKind::InvalidDomain
+                    | DkimSignatureErrorKind::InvalidBodyLength
+                    | DkimSignatureErrorKind::InvalidSelector
+                    | DkimSignatureErrorKind::InvalidTimestamp
+                    | DkimSignatureErrorKind::InvalidExpiration
+                    | DkimSignatureErrorKind::InvalidBase64
+                    | DkimSignatureErrorKind::InvalidSignedHeaderName
+                    | DkimSignatureErrorKind::InvalidCopiedHeaderField
+                    | DkimSignatureErrorKind::Utf8Encoding
                     | DkimSignatureErrorKind::InvalidTagList => AuthResultsKind::Neutral,
                 },
                 VerificationFailure(error) => match error {
@@ -143,11 +185,13 @@ impl VerificationStatus {
     }
 }
 
+/// An error that occurs when using a [`Verifier`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum VerifierError {
     DkimSignatureHeaderFormat(DkimSignatureError),
     WrongKeyType,
     KeyRecordSyntax,
+    KeyRevoked,
     DisallowedHashAlgorithm,
     DisallowedServiceType,
     DomainMismatch,
@@ -168,6 +212,7 @@ impl Display for VerifierError {
             Self::DkimSignatureHeaderFormat(error) => error.kind.fmt(f),
             Self::WrongKeyType => write!(f, "wrong key type"),
             Self::KeyRecordSyntax => write!(f, "invalid syntax in key record"),
+            Self::KeyRevoked => write!(f, "key in key record revoked"),
             Self::DisallowedHashAlgorithm => write!(f, "hash algorithm not allowed"),
             Self::DisallowedServiceType => write!(f, "service type not allowed"),
             Self::DomainMismatch => write!(f, "domain mismatch"),
@@ -189,6 +234,12 @@ impl Display for VerifierError {
 /// The mapping of an RFC 6376 *SUCCESS*, *PERMFAIL*, or *TEMPFAIL* result to an
 /// RFC 8601 DKIM error result is not well defined. Our interpretation of each
 /// result is given in detail below.
+///
+/// As a general rule, of the error result kinds `Neutral` is the early bail-out
+/// error type, which signals that verification didn’t proceed past a basic
+/// attempt at parsing a signature, while `Fail`, `Policy`, `Temperror`, and
+/// `Permerror` are error types that are used for more concrete problems
+/// concerning a well-understood signature.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AuthResultsKind {
     /// The *none* result. (Not used in this library.)
@@ -210,8 +261,8 @@ pub enum AuthResultsKind {
     /// be or was not verified, because some aspect of it was unacceptable due
     /// to a configurable policy reason.
     ///
-    /// Examples include: configuration required a header to be signed, but it
-    /// was not covered by a signature.
+    /// Examples include: signature expired, configuration required a header to
+    /// be signed, but it wasn’t.
     Policy,
 
     /// The *neutral* result. This result means that a DKIM signature could not
@@ -230,9 +281,9 @@ pub enum AuthResultsKind {
     Temperror,
 
     /// The *permerror* result. This result means that a DKIM signature was
-    /// determined to be definitely broken. The problem with the signature is
-    /// understood, is permanent, and the signature must be rejected (by this
-    /// and any other implementation).
+    /// determined to be definitely broken or not verifiable. The problem with
+    /// the signature is understood, is permanent, and the signature must be
+    /// rejected (by this and any other implementation).
     ///
     /// Examples include: missing required tag in signature, missing public key
     /// record in DNS, l= tag larger than message body length.
@@ -267,24 +318,30 @@ struct SigTask {
     key_size: Option<usize>,
 }
 
-/// A verifier validating all DKIM signatures in a message.
-///
-/// The verifier proceeds in three stages...
+/// A verifier of DKIM signatures in an email message.
 pub struct Verifier {
     tasks: Vec<SigTask>,
     body_hasher: BodyHasher,
 }
 
 impl Verifier {
-    pub async fn process_headers<T>(resolver: &T, headers: &HeaderFields, config: &Config) -> Self
+    /// Initiates a message verification process.
+    ///
+    /// Returns a verifier for all signatures in the given header, or `None` if
+    /// the header contains no signatures.
+    pub async fn process_headers<T>(
+        resolver: &T,
+        headers: &HeaderFields,
+        config: &Config,
+    ) -> Option<Self>
     where
         T: LookupTxt + Clone + 'static,
     {
-        let tasks = HeaderVerifier::find_dkim_signatures(headers, config);
+        let verifier = HeaderVerifier::find_dkim_signatures(headers, config)?;
 
-        let queries = Queries::spawn(&tasks.tasks, resolver, config);
+        let queries = Queries::spawn(&verifier.tasks, resolver, config);
 
-        let tasks = tasks.verify_all(queries).await;
+        let tasks = verifier.verify_all(queries).await;
 
         let mut final_tasks = vec![];
         let mut body_hasher = BodyHasherBuilder::new(config.forbid_partially_signed_body);
@@ -305,13 +362,17 @@ impl Verifier {
             });
         }
 
-        Self {
+        Some(Self {
             tasks: final_tasks,
             body_hasher: body_hasher.build(),
-        }
+        })
     }
 
-    pub fn body_chunk(&mut self, chunk: &[u8]) -> BodyCanonStatus {
+    /// Processes a chunk of a message body.
+    ///
+    /// Note that the chunk is canonicalised and hashed, but not otherwise
+    /// retained in memory.
+    pub fn body_chunk(&mut self, chunk: &[u8]) -> BodyHasherStance {
         self.body_hasher.hash_chunk(chunk)
     }
 
@@ -342,7 +403,7 @@ impl Verifier {
                         Ok((h, _)) => {
                             if h != &sig.body_hash {
                                 // downgrade status Success -> Failure!
-                                trace!("body hash mismatch: {}", signature::encode_binary(h));
+                                trace!("body hash mismatch: {}", util::encode_binary(h));
                                 VerificationStatus::Failure(VerifierError::BodyHashMismatch)
                             } else {
                                 trace!("body hash matched");
@@ -353,7 +414,7 @@ impl Verifier {
                             // downgrade status Success -> Failure!
                             VerificationStatus::Failure(VerifierError::InsufficientBodyLength)
                         }
-                        Err(BodyHasherError::ForbiddenTruncation) => {
+                        Err(BodyHasherError::InputTruncated) => {
                             // downgrade status Success -> Failure!
                             VerificationStatus::Failure(VerifierError::Policy(PolicyError::ForbidPartiallySignedBody))
                         }
@@ -370,6 +431,7 @@ impl Verifier {
             }
         }
 
+        // TODO assert, document that non-empty; introduce `VerificationResults`?
         result
     }
 }

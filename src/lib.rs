@@ -7,30 +7,18 @@
 //! The feature **`trust-dns-resolver`** makes an implementation of `LookupTxt`
 //! available for the Trust-DNS resolver.
 //!
-//! The feature **`sha1`** enables support for the insecure, historic SHA-1 hash
-//! algorithm for verification and signing. This is a legacy compatibility
-//! feature, its use is strongly discouraged.
+//! The feature **`sha1`** enables the insecure, historic SHA-1 hash algorithm.
+//! In the API and implementation, wherever there is support for the SHA-256
+//! hash algorithm, with this feature additional support for SHA-1 becomes
+//! available. This is a legacy compatibility feature, its use is strongly
+//! discouraged.
 
-// - secure
-// - RFCs compliance
-// - focus on compatibility and interoperability
-//   - balance compatibility with security
-//   - be lenient on inputs so far as sensible in terms of security
-//   - where acceptable, don't require valid UTF-8
-//   - support widespread non-standard key formats
-//
-// Credits:
-// While this is an independent implementation that was created from scratch it
-// is worth crediting the excellent OpenDKIM library. The 'staged' design, that
-// does not require the whole message in memory at once, is inspired from
-// OpenDKIM.
-
-mod body_hash;
 pub mod canonicalize;
 pub mod crypto;
-mod dqp;
 pub mod header;
+pub mod message_hash;
 mod parse;
+mod quoted_printable;
 pub mod record;
 pub mod signature;
 pub mod signer;
@@ -41,7 +29,7 @@ pub mod verifier;
 pub use crate::{
     crypto::SigningKey,
     header::{FieldBody, FieldName, HeaderField, HeaderFields},
-    signer::{Signer, SignerError, SigningRequest},
-    util::CanonicalStr,
+    signer::{Signer, SignerError},
+    util::{encode_binary, CanonicalStr},
     verifier::{VerificationResult, VerificationStatus, Verifier, VerifierError},
 };

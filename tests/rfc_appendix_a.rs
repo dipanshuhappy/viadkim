@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     future::Future,
     io::{self, ErrorKind},
     pin::Pin,
@@ -7,7 +8,7 @@ use tokio::fs;
 use viadkim::{
     crypto::SigningKey,
     signature::{DomainName, Selector, SignatureAlgorithm},
-    signer::{SigningRequest, SigningStatus},
+    signer::{HeaderSelection, SignRequest, SigningStatus},
     verifier::{LookupTxt, VerificationStatus},
     FieldName, HeaderFields, Signer, Verifier,
 };
@@ -62,7 +63,7 @@ async fn rfc_appendix_a_rsa() {
     let headers = make_header_fields();
     let config = Default::default();
 
-    let mut verifier = Verifier::process_headers(&resolver, &headers, &config).await;
+    let mut verifier = Verifier::process_headers(&resolver, &headers, &config).await.unwrap();
 
     let body = make_body();
 
@@ -84,7 +85,7 @@ async fn rfc_appendix_a_spki() {
     let headers = make_header_fields();
     let config = Default::default();
 
-    let mut verifier = Verifier::process_headers(&resolver, &headers, &config).await;
+    let mut verifier = Verifier::process_headers(&resolver, &headers, &config).await.unwrap();
 
     let body = make_body();
 
@@ -108,20 +109,23 @@ async fn sign_roundtrip() {
     let s = fs::read_to_string("tests/brisbane_private.pem").await.unwrap();
     let signing_key = SigningKey::from_pkcs8_pem(&s).unwrap();
 
-    let mut req = SigningRequest::new(
+    let mut req = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("brisbane").unwrap(),
         SignatureAlgorithm::RsaSha256,
         signing_key,
     );
-    req.signed_headers = vec![
-        FieldName::new("Received").unwrap(),
-        FieldName::new("From").unwrap(),
-        FieldName::new("To").unwrap(),
-        FieldName::new("Subject").unwrap(),
-        FieldName::new("Date").unwrap(),
-        FieldName::new("Message-ID").unwrap(),
-    ];
+    req.header_selection = HeaderSelection::Pick {
+        include: HashSet::from([
+            FieldName::new("Received").unwrap(),
+            FieldName::new("From").unwrap(),
+            FieldName::new("To").unwrap(),
+            FieldName::new("Subject").unwrap(),
+            FieldName::new("Date").unwrap(),
+            FieldName::new("Message-ID").unwrap(),
+        ]),
+        oversign: Default::default(),
+    };
 
     let headers = make_header_fields();
 
@@ -144,7 +148,7 @@ async fn sign_roundtrip() {
     let headers = make_header_fields();
     let config = Default::default();
 
-    let mut verifier = Verifier::process_headers(&resolver, &headers, &config).await;
+    let mut verifier = Verifier::process_headers(&resolver, &headers, &config).await.unwrap();
 
     verifier.body_chunk(&body);
 
@@ -155,6 +159,7 @@ async fn sign_roundtrip() {
     assert_eq!(result.status, VerificationStatus::Success);
 }
 
+// Note RFC 6376, erratum 4926!
 fn make_header_fields() -> HeaderFields {
     let headers: Vec<(String, Vec<u8>)> = vec![
         (
@@ -198,6 +203,7 @@ fn make_header_fields() -> HeaderFields {
     HeaderFields::from_vec(headers).unwrap()
 }
 
+// Note RFC 6376, erratum 3192!
 fn make_body() -> Vec<u8> {
     b"Hi.\r
 \r

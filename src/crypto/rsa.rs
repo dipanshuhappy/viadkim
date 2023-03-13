@@ -43,7 +43,7 @@ pub fn verify_rsa(
         }
     };
 
-    // TODO consider recording rsa crypto error _e somewhere
+    // TODO consider recording rsa crypto error somewhere
     result.map_err(|_e| VerificationError::VerificationFailure)
 }
 

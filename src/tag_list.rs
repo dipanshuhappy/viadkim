@@ -1,58 +1,64 @@
 use crate::{
-    dqp,
     header::FieldName,
     parse::{strip_fws, strip_suffix},
+    quoted_printable,
 };
-use std::{collections::HashSet, str};
 use base64ct::{Base64, Encoding};
+use std::{collections::HashSet, str};
+
+// TODO revisit module, names, errors
 
 pub fn parse_colon_separated_tag_value(value: &str) -> Vec<&str> {
-    // note: value already well-formed:
-    // - only ASCII chars w/o ';' and non-ASCII UTF-8
-    // - only interposed well-formed FWS
-    // TODO what if value.is_empty
-    // TODO what if the thing between ...:FWS<here>FWS:... contains FWS?
+    // assume input is a valid tag-list value
+    debug_assert!(is_tag_value(value));
+
     value
         .split(':')
         .map(|s| s.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n')))
         .collect()
 }
 
-// qp-section := [*(ptext / SPACE / TAB) ptext]
-// ptext := hex-octet / safe-char     [= is_dqp_char]
 pub fn parse_qp_section_tag_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
-    // assume no leading/trailing ws
-    // *one* line, so no fws allowed
+    debug_assert!(is_tag_value(value));
+    // TODO also: no FWS allowed in qp-section
 
-    match dqp::parse_qp_section(value) {
+    match quoted_printable::parse_qp_section(value) {
         Some(v) => Ok(v),
         None => Err(TagListParseError::Syntax),
     }
 }
 
-// TODO does this allow empty value?
 pub fn parse_base64_tag_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
-    let value = trim_base64_tag_value(value);
+    debug_assert!(is_tag_value(value));
+
+    let value = strip_fws_from_tag_value(value);
     Base64::decode_vec(&value).map_err(|_| TagListParseError::Syntax)
 }
 
-pub fn trim_base64_tag_value(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
-        .collect()
+pub fn parse_dqp_tag_value(value: &str) -> Result<String, TagListParseError> {
+    debug_assert!(is_tag_value(value));
+
+    let value = strip_fws_from_tag_value(value);
+
+    let val = quoted_printable::dqp_decode(&value).map_err(|_| TagListParseError::Syntax)?;
+
+    String::from_utf8(val).map_err(|_| TagListParseError::Syntax)
 }
 
 pub fn parse_dqp_header_field(value: &str) -> Result<(FieldName, Box<[u8]>), TagListParseError> {
-    // (?) enforce well-formedness requirement for header field names, but not
-    // for the dqp-encoded value, which can be anything
+    // note: unlike other functions here, value may be surrounded with FWS
+    debug_assert!({
+        let v = strip_fws(value).unwrap_or(value);
+        v.is_empty()
+            || matches!(parse_tag_value(v), Some((rest, _)) if strip_fws(rest).unwrap_or(rest).is_empty())
+    });
 
-    let value: String = value
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
-        .collect();
+    // This enforces well-formedness requirement for header field names, but not
+    // for the dqp-encoded value, which can be anything.
 
-    let val = dqp::dqp_decode(&value).map_err(|_| TagListParseError::Syntax)?;
+    let value = strip_fws_from_tag_value(value);
+
+    let val = quoted_printable::dqp_decode(&value).map_err(|_| TagListParseError::Syntax)?;
 
     let mut iter = val.splitn(2, |&c| c == b':');
 
@@ -67,6 +73,19 @@ pub fn parse_dqp_header_field(value: &str) -> Result<(FieldName, Box<[u8]>), Tag
     }
 }
 
+fn is_tag_value(s: &str) -> bool {
+    s.is_empty() || matches!(parse_tag_value(s), Some((rest, _)) if rest.is_empty())
+}
+
+// TODO this is not good public API, revisit
+pub fn strip_fws_from_tag_value(value: &str) -> String {
+    // assume only well-formed FWS
+    value
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
+        .collect()
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct TagSpec<'a> {
     pub name: &'a str,
@@ -78,33 +97,6 @@ pub enum TagListParseError {
     DuplicateTag,
     Syntax,
 }
-
-// fn sort_test2(tags: &mut [TagSpec<'_>]) {
-//     sort_test(tags, |tag_spec| match tag_spec.name {
-//         "d"  => 0,  // who is responsible for sig
-//         "s"  => 1,
-//         "v"  => 2,
-//         "a"  => 10,
-//         "c"  => 10,
-//         "h"  => 10,
-//         "i"  => 10,
-//         "l"  => 10,
-//         "q"  => 10,
-//         "t"  => 10,
-//         "x"  => 10,
-//         "b"  => 100,
-//         "bh" => 100,
-//         "z"  => 1000,
-//         _ => usize::MAX,
-//     })
-// }
-
-// fn sort_test<F>(tags: &mut [TagSpec<'_>], f: F)
-// where
-//     F: FnMut(&TagSpec) -> usize,
-// {
-//     tags.sort_unstable_by_key(f);
-// }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct TagList<'a>(Vec<TagSpec<'a>>);
@@ -175,7 +167,7 @@ fn parse_tag_name(value: &str) -> Option<(&str, &str)> {
     Some((s, strip_suffix(value, s)))
 }
 
-// note bug in abnf
+// Note erratum 5070 in ABNF
 fn parse_tag_value(value: &str) -> Option<(&str, &str)> {
     fn strip_tval(s: &str) -> Option<&str> {
         s.strip_prefix(is_tval_char)
@@ -207,6 +199,15 @@ pub fn is_tval_char(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_colon_separated_tag_value_ok() {
+        assert_eq!(
+            parse_colon_separated_tag_value("ab:\r\n\tc\r\n\td:e"),
+            ["ab", "c\r\n\td", "e"]
+        );
+        assert_eq!(parse_colon_separated_tag_value(""), [""]);
+    }
 
     #[test]
     fn tag_list_from_str_ok() {

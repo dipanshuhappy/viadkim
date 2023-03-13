@@ -66,11 +66,47 @@ Trust-DNS async resolver by enabling feature `trust-dns-resolver`.
 
 ## Examples
 
-TODO
+Two simple command-line utilities are included as examples, one for signing a
+message, and one for verifying a message’s signatures.
 
-`dkimverify`
+The program **`dkimsign`** produces a DKIM signature for the message provided on
+standard input. It takes three arguments: a path to a key file containing a
+signing key in PKCS#8 PEM format, a domain (the *d=* tag), and a selector (the
+*s=* tag). It then prints a DKIM-Signature header that can be prepended to the
+message.
 
-`dkimsign`
+Example invocation:
+
+```
+cargo run --example dkimsign -- \
+  /path/to/key.pem example.com selector < /path/to/msg-to-sign
+```
+
+The program **`dkimverify`** verifies the DKIM signatures of a message provided
+on standard input. It prints each signature and verification result as Rust data
+structures.
+
+Example invocation:
+
+```
+cargo run --features trust-dns-resolver \
+  --example dkimverify < /path/to/msg-to-verify
+```
+
+In both examples, export the environment variable `RUST_LOG=viadkim=trace` to
+enable the library’s trace logging.
+
+Edit these examples to experiment with various configuration options.
+
+## Acknowledgments
+
+While this is an independent implementation of DKIM that was created from
+scratch, the author wants to give credit to the [OpenDKIM] project. As a
+long-time user of OpenDKIM, some design choices made here were inspired by it.
+For example, the ‘staged’ design, which does not require that the whole message
+reside in memory at once, is inspired from OpenDKIM.
+
+[OpenDKIM]: http://opendkim.org
 
 ## Licence
 

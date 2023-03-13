@@ -53,11 +53,9 @@ mod rsa;
 
 pub use self::{
     ed25519::{read_ed25519_verifying_key, sign_ed25519, verify_ed25519},
-    hash::{CountingHasher, HashStatus, InsufficientInput},
+    hash::{digest_slices, CountingHasher, HashStatus, InsufficientInput},
     rsa::{read_rsa_public_key, sign_rsa, verify_rsa},
 };
-// TODO
-pub(crate) use hash::data_hash_digest;
 
 use crate::util::CanonicalStr;
 use ::rsa::{RsaPrivateKey, RsaPublicKey};
@@ -75,14 +73,14 @@ pub enum SigningKey {
 }
 
 impl SigningKey {
-    pub fn to_key_type(&self) -> KeyType {
+    pub fn key_type(&self) -> KeyType {
         match self {
             Self::Rsa(_) => KeyType::Rsa,
             Self::Ed25519(_) => KeyType::Ed25519,
         }
     }
 
-    // TODO
+    // TODO clean up errors
     pub fn from_pkcs8_pem(s: &str) -> io::Result<Self> {
         let (label, private_key_der) = Document::from_pem(s)
             .map_err(|_| io::Error::new(ErrorKind::Other, "not a PEM document"))?;

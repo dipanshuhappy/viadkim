@@ -1,9 +1,12 @@
 //! Representation of email header data.
+//!
+//! See RFC 5322, section 2.2.
 
 use bstr::ByteSlice;
 use std::{
     fmt::{self, Debug, Formatter},
     hash::{Hash, Hasher},
+    mem,
 };
 
 pub type HeaderField = (FieldName, FieldBody);
@@ -43,21 +46,65 @@ impl AsRef<[HeaderField]> for HeaderFields {
     }
 }
 
-// TODO FieldName allows RFC 5322 header field names; but note that ';' is not practical in DKIM
-// the only place where ';' in FieldName is a problem is when constructing the
-// SigningRequest (and to some degree when manually constructing DkimSignature)
+/// Parses a header block into header fields. Convenience function.
+pub fn parse_header(s: &str) -> Result<HeaderFields, HeaderFieldError> {
+    let mut lines = s.lines();
+
+    let first_line = lines.next()
+        .filter(|l| !is_continuation_line(l))
+        .ok_or(HeaderFieldError)?;
+
+    let (mut name, mut value) = split_header_field(first_line)?;
+
+    let mut headers = vec![];
+
+    for line in lines {
+        if is_continuation_line(line) {
+            value.extend(b"\r\n");
+            value.extend(line.bytes());
+        } else {
+            let (next_name, next_value) = split_header_field(line)?;
+            let name = mem::replace(&mut name, next_name);
+            let value = mem::replace(&mut value, next_value);
+            let value = FieldBody::new(value)?;
+            headers.push((name, value));
+        }
+    }
+
+    let value = FieldBody::new(value)?;
+    headers.push((name, value));
+
+    HeaderFields::new(headers)
+}
+
+fn is_continuation_line(s: &str) -> bool {
+    s.starts_with(' ') || s.starts_with('\t')
+}
+
+fn split_header_field(s: &str) -> Result<(FieldName, Vec<u8>), HeaderFieldError> {
+    let (name, value) = s.split_once(':').ok_or(HeaderFieldError)?;
+
+    let name = FieldName::new(name)?;
+    let value = value.bytes().collect();
+
+    Ok((name, value))
+}
+
+// Our `FieldName` allows RFC 5322 header field names; but note that ‘;’ is not
+// practical in DKIM.
+/// A header field name.
 #[derive(Clone, Eq)]
 pub struct FieldName(Box<str>);
 
 impl FieldName {
     pub fn new(value: impl Into<Box<str>>) -> Result<Self, HeaderFieldError> {
         let value = value.into();
-        if value.is_empty() {
+
+        // The name must be composed of printable ASCII except colon.
+        if value.is_empty() || !value.chars().all(|c| c.is_ascii_graphic() && c != ':') {
             return Err(HeaderFieldError);
         }
-        if !value.chars().all(|c| c.is_ascii_graphic() && c != ':') {
-            return Err(HeaderFieldError);
-        }
+
         Ok(Self(value))
     }
 }
@@ -92,25 +139,34 @@ impl Hash for FieldName {
     }
 }
 
+/// A header field body, colloquially known as a ‘header value’.
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub struct FieldBody(Box<[u8]>);
 
 impl FieldBody {
     pub fn new(value: impl Into<Box<[u8]>>) -> Result<Self, HeaderFieldError> {
         let value = value.into();
-        // only folded continuation lines:
-        if !(value.split_str("\r\n").skip(1).all(|line| line.starts_with(b" ") || line.starts_with(b"\t"))) {
-            return Err(HeaderFieldError);
+
+        for (i, line) in value.split_str("\r\n").enumerate() {
+            // If there are any control characters in the line, including stray
+            // CR and LF, return error. All other bytes (including Latin 1, or
+            // malformed UTF-8) are allowed.
+            if line.iter().any(|b| b.is_ascii_control() && *b != b'\t') {
+                return Err(HeaderFieldError);
+            }
+
+            if i != 0 {
+                // Continuation lines must be ‘folded’, ie start with WSP.
+                if !line.starts_with(b" ") && !line.starts_with(b"\t") {
+                    return Err(HeaderFieldError);
+                }
+                // The rest of the continuation line must not be WSP-only.
+                if line.iter().all(|b| matches!(b, b' ' | b'\t')) {
+                    return Err(HeaderFieldError);
+                }
+            }
         }
-        // no empty or blank lines past the first one, no trailing CRLF:
-        if !(value.split_str("\r\n").skip(1).all(|line| !line.trim_with(|c| matches!(c, ' ' | '\t')).is_empty())) {
-            return Err(HeaderFieldError);
-        }
-        // no stray CR and LF
-        if !(value.split_str("\r\n").all(|line| !line.contains(&b'\r') && !line.contains(&b'\n'))) {
-            return Err(HeaderFieldError);
-        }
-        // allow all other bytes, UTF-8 not required to accomodate eg mistaken Latin 1 bytes
+
         Ok(Self(value))
     }
 }
@@ -123,9 +179,7 @@ impl AsRef<[u8]> for FieldBody {
 
 impl Debug for FieldBody {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("FieldBody")
-            .field(&self.0.as_bstr())
-            .finish()
+        self.0.as_bstr().fmt(f)
     }
 }
 
@@ -137,17 +191,21 @@ mod tests {
     fn field_name_ok() {
         assert!(FieldName::new("abc").is_ok());
 
+        assert!(FieldName::new("").is_err());
         assert!(FieldName::new("abc ").is_err());
         assert!(FieldName::new("a:c").is_err());
     }
 
     #[test]
     fn field_body_ok() {
+        assert!(FieldBody::new(*b"").is_ok());
+        assert!(FieldBody::new(*b"abc").is_ok());
         assert!(FieldBody::new(*b" ab\r\n\tcd ").is_ok());
         assert!(FieldBody::new(*b"\r\n\ta").is_ok());
         assert!(FieldBody::new(*b"  ").is_ok());
 
         assert!(FieldBody::new(*b" \r\na").is_err());
+        assert!(FieldBody::new(*b" \r\n\r\n a").is_err());
         assert!(FieldBody::new(*b" \r\n \r\n a").is_err());
         assert!(FieldBody::new(*b" \na").is_err());
         assert!(FieldBody::new(*b" abc\r\n").is_err());
