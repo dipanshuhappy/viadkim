@@ -54,6 +54,7 @@ impl UnsignedDkimSignature {
             timestamp: self.timestamp,
             expiration: self.expiration,
             copied_headers: self.copied_headers,
+            extra_tags: None,
         }
     }
 }

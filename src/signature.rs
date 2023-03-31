@@ -681,8 +681,8 @@ impl Display for DkimSignatureErrorKind {
 
 /// DKIM signature data as encoded in a `DKIM-Signature` header field.
 ///
-/// The *v=* tag (always 1), the *q=* tag (always includes dns/txt), and any
-/// unknown tags are not included.
+/// The *v=* tag (always 1) and the *q=* tag (always includes dns/txt) are not
+/// included.
 #[derive(Clone, Eq, PartialEq)]
 pub struct DkimSignature {
     // The fields are strongly typed and have public visibility. This does allow
@@ -696,6 +696,7 @@ pub struct DkimSignature {
     // unable or unwilling to commit to an individual user name within the
     // domain. It can do so by including the domain part but not the local-part
     // of the identity.’
+    // - z= and extras need not be Option, because if present will be non-empty?
 
     /// The *a=* tag.
     pub algorithm: SignatureAlgorithm,
@@ -710,7 +711,7 @@ pub struct DkimSignature {
     /// The *h=* tag.
     pub signed_headers: Box<[FieldName]>,  // not empty, no names containing `;`
     /// The *i=* tag.
-    pub user_id: Option<Identity>,  // rename "user" or "agent"?
+    pub user_id: Option<Identity>,  // rename "user" or "agent" or simply "identity"?
     /// The *l=* tag.
     pub body_length: Option<u64>,
     /// The *s=* tag.
@@ -721,8 +722,9 @@ pub struct DkimSignature {
     pub expiration: Option<u64>,
     /// The *z=* tag.
     pub copied_headers: Option<Box<[(FieldName, Box<[u8]>)]>>,  // not empty, name may contain `;`!
-
-    // TODO make available "unknown" tags, especially RFC 6651 Reporting
+    /// Additional, unknown tag name and value pairs. (For example, for RFC 6651
+    /// Reporting.)
+    pub extra_tags: Option<Box<[(Box<str>, Box<str>)]>>,
 }
 
 impl DkimSignature {
@@ -740,6 +742,7 @@ impl DkimSignature {
         let mut timestamp = None;
         let mut expiration = None;
         let mut copied_headers = None;
+        let mut extra_tags = vec![];
 
         for &TagSpec { name, value } in tag_list.as_ref() {
             match name {
@@ -863,7 +866,9 @@ impl DkimSignature {
 
                     copied_headers = Some(headers.into());
                 }
-                _ => {}
+                _ => {
+                    extra_tags.push((name.into(), value.into()));
+                }
             }
         }
 
@@ -892,6 +897,12 @@ impl DkimSignature {
 
         let canonicalization = canonicalization.unwrap_or_default();
 
+        let extra_tags = if extra_tags.is_empty() {
+            None
+        } else {
+            Some(extra_tags.into())
+        };
+
         Ok(Self {
             algorithm,
             signature_data,
@@ -905,6 +916,7 @@ impl DkimSignature {
             timestamp,
             expiration,
             copied_headers,
+            extra_tags,
         })
     }
 }
@@ -969,6 +981,7 @@ impl fmt::Debug for DkimSignature {
             .field("timestamp", &self.timestamp)
             .field("expiration", &self.expiration)
             .field("copied_headers", &self.copied_headers.as_deref().map(CopiedHeaders))
+            .field("extra_tags", &self.extra_tags)
             .finish()
     }
 }
@@ -1110,6 +1123,7 @@ mod tests {
                     ]
                     .into()
                 ),
+                extra_tags: None,
             }
         );
     }
@@ -1120,7 +1134,8 @@ mod tests {
         let example = " v = 1 ; a=rsa-sha256;d=example.net; s=brisbane;
    c=simple; q=dns/txt; i=中文=40en
     g.example =2E net;
-   t=1117574938; x=1118006938;
+   t=1117574938; x=1118006938;  y= curious
+    value; zz=;
    h=from:to:subject:date;
    bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=;
    b=dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZVoG4ZHRNiYzR";
@@ -1160,6 +1175,19 @@ mod tests {
                 timestamp: Some(1117574938),
                 expiration: Some(1118006938),
                 copied_headers: None,
+                extra_tags: Some(
+                    [
+                        (
+                            "y".into(),
+                            "curious\r\n    value".into(),
+                        ),
+                        (
+                            "zz".into(),
+                            "".into(),
+                        ),
+                    ]
+                    .into()
+                ),
             }
         );
     }

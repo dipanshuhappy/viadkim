@@ -24,8 +24,8 @@ pub trait LookupTxt: Send + Sync {
 
     /// Looks up the domain’s TXT records in DNS.
     ///
-    /// The domain will be passed to this trait as a string in human-readable
-    /// A-label (ASCII) format (eg `selector._domainkey.example.com`).
+    /// The domain will be passed to this method as a string in absolute,
+    /// A-label (ASCII) format (eg `selector._domainkey.example.com.`).
     ///
     /// Note that according to RFC 6376, the final answer is expected to contain
     /// only a single TXT record (but DNS allows > 1).

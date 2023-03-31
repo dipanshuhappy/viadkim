@@ -51,11 +51,24 @@ pub struct VerifyingTask {
 }
 
 impl VerifyingTask {
-    fn new_not_started(index: usize, error: VerifierError) -> Self {
+    fn failed(index: usize, error: VerifierError) -> Self {
         let status = VerificationStatus::Failure(error);
         Self {
             index,
             sig: None,
+            name: None,
+            value: None,
+            status: Some(status),
+            testing: false,
+            key_size: None,
+        }
+    }
+
+    fn failed_with_sig(index: usize, sig: DkimSignature, error: VerifierError) -> Self {
+        let status = VerificationStatus::Failure(error);
+        Self {
+            index,
+            sig: Some(sig),
             name: None,
             value: None,
             status: Some(status),
@@ -102,7 +115,7 @@ impl<'a> HeaderVerifier<'a> {
             let value = match str::from_utf8(value.as_ref()) {
                 Ok(r) => r,
                 Err(_) => {
-                    tasks.push(VerifyingTask::new_not_started(
+                    tasks.push(VerifyingTask::failed(
                         idx,
                         VerifierError::DkimSignatureHeaderFormat(DkimSignatureError {
                             domain: None,
@@ -117,11 +130,11 @@ impl<'a> HeaderVerifier<'a> {
             let task = match DkimSignature::from_str(value) {
                 Ok(sig) => {
                     // TODO revisit, clean up
-                    // TODO here, a DkimSignature is actually available: store in task. same below
                     for h in &config.required_signed_headers {
                         if !sig.signed_headers.contains(h) {
-                            tasks.push(VerifyingTask::new_not_started(
+                            tasks.push(VerifyingTask::failed_with_sig(
                                 idx,
+                                sig,
                                 VerifierError::Policy(PolicyError::RequiredHeadersNotSigned),
                             ));
                             continue 'outer;
@@ -131,8 +144,9 @@ impl<'a> HeaderVerifier<'a> {
                     if let Some(len) = sig.body_length {
                         if usize::try_from(len).is_err() {
                             // signed body length too large to undergo DKIM processing on this platform
-                            tasks.push(VerifyingTask::new_not_started(
+                            tasks.push(VerifyingTask::failed_with_sig(
                                 idx,
+                                sig,
                                 VerifierError::Overflow,
                             ));
                             continue 'outer;
@@ -145,8 +159,8 @@ impl<'a> HeaderVerifier<'a> {
                         if let Some(t) = sig.expiration {
                             let delta = config.time_tolerance.as_secs();
                             if current_t >= t.saturating_add(delta) {
-                                tasks.push(VerifyingTask::new_not_started(
-                                        idx, VerifierError::Policy(PolicyError::SignatureExpired),
+                                tasks.push(VerifyingTask::failed_with_sig(
+                                        idx, sig, VerifierError::Policy(PolicyError::SignatureExpired),
                                 ));
                                 continue 'outer;
                             }
@@ -156,8 +170,8 @@ impl<'a> HeaderVerifier<'a> {
                         if let Some(t) = sig.timestamp {
                             let delta = config.time_tolerance.as_secs();
                             if t.saturating_sub(delta) > current_t {
-                                tasks.push(VerifyingTask::new_not_started(
-                                        idx, VerifierError::Policy(PolicyError::TimestampInFuture),
+                                tasks.push(VerifyingTask::failed_with_sig(
+                                        idx, sig, VerifierError::Policy(PolicyError::TimestampInFuture),
                                 ));
                                 continue 'outer;
                             }
@@ -166,7 +180,7 @@ impl<'a> HeaderVerifier<'a> {
 
                     VerifyingTask::new(idx, sig, name.as_ref().into(), value.into())
                 }
-                Err(e) => VerifyingTask::new_not_started(idx, VerifierError::DkimSignatureHeaderFormat(e)),
+                Err(e) => VerifyingTask::failed(idx, VerifierError::DkimSignatureHeaderFormat(e)),
             };
 
             tasks.push(task);

@@ -124,6 +124,8 @@ pub struct SignRequest<T> {
     pub timestamp: Option<Timestamp>,
     pub valid_duration: Option<Duration>,
     pub header_name: String,  // ~"DKIM-Signature"
+    // TODO extra tags:
+    // pub extra_tags: Vec<(String, String)>,
 
     // Additional config
     pub line_width: usize,

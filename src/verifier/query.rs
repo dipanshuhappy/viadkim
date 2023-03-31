@@ -1,6 +1,6 @@
 use crate::{
     signature::{DomainName, Selector},
-    verifier::{header::VerifyingTask, Config, LookupTxt},
+    verifier::{header::VerifyingTask, VerificationStatus, Config, LookupTxt},
 };
 use std::{
     collections::HashMap,
@@ -93,9 +93,14 @@ impl Queries {
         let mut builder = QueriesBuilder::new();
 
         for task in sigs {
-            // TODO revisit: don't check if DkimSignature is available, check status instead
-            if let Some(sig) = &task.sig {
-                builder.add_lookup(&sig.domain, &sig.selector, task.index);
+            match &task.status {
+                Some(VerificationStatus::Failure(_)) => {}
+                _ => {
+                    if let Some(sig) = &task.sig {
+                        // if verification hasn't failed yet and there is a usable signature, register a lookup
+                        builder.add_lookup(&sig.domain, &sig.selector, task.index);
+                    }
+                }
             }
         }
 

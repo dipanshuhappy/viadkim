@@ -30,7 +30,7 @@ pub fn perform_verification(
         &original_dkim_sig,
     );
 
-    verify_signature(&public_key, hash_alg, &data_hash, signature_data)
+    verify_signature(public_key, hash_alg, &data_hash, signature_data)
 }
 
 fn make_original_dkim_sig(value: &str) -> Cow<'_, str> {

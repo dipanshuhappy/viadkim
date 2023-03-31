@@ -63,7 +63,7 @@ async fn rfc_appendix_a_rsa() {
     let headers = make_header_fields();
     let config = Default::default();
 
-    let mut verifier = Verifier::process_headers(&resolver, &headers, &config).await.unwrap();
+    let mut verifier = Verifier::process_header(&resolver, &headers, &config).await.unwrap();
 
     let body = make_body();
 
@@ -85,7 +85,7 @@ async fn rfc_appendix_a_spki() {
     let headers = make_header_fields();
     let config = Default::default();
 
-    let mut verifier = Verifier::process_headers(&resolver, &headers, &config).await.unwrap();
+    let mut verifier = Verifier::process_header(&resolver, &headers, &config).await.unwrap();
 
     let body = make_body();
 
@@ -148,7 +148,7 @@ async fn sign_roundtrip() {
     let headers = make_header_fields();
     let config = Default::default();
 
-    let mut verifier = Verifier::process_headers(&resolver, &headers, &config).await.unwrap();
+    let mut verifier = Verifier::process_header(&resolver, &headers, &config).await.unwrap();
 
     verifier.body_chunk(&body);
 

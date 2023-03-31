@@ -17,7 +17,7 @@ async fn basic_verify() {
 
     let config = Default::default();
 
-    let _verifier = Verifier::process_headers(&resolver, &headers, &config).await;
+    let _verifier = Verifier::process_header(&resolver, &headers, &config).await;
 
     // verifier.body_chunk(b"how is it going\r\n");
 

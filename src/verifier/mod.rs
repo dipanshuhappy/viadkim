@@ -329,7 +329,7 @@ impl Verifier {
     ///
     /// Returns a verifier for all signatures in the given header, or `None` if
     /// the header contains no signatures.
-    pub async fn process_headers<T>(
+    pub async fn process_header<T>(
         resolver: &T,
         headers: &HeaderFields,
         config: &Config,

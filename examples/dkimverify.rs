@@ -35,7 +35,7 @@ async fn main() {
         ..Default::default()
     };
 
-    let mut verifier = Verifier::process_headers(&resolver, &headers, &config)
+    let mut verifier = Verifier::process_header(&resolver, &headers, &config)
         .await
         .unwrap();
 
