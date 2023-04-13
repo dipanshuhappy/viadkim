@@ -83,8 +83,8 @@ cargo run --example dkimsign -- \
 ```
 
 The program **`dkimverify`** verifies the DKIM signatures of a message provided
-on standard input. It prints each signature and verification result as Rust data
-structures.
+on standard input. It prints each verification result with signature as Rust
+data structures.
 
 Example invocation:
 

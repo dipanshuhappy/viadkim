@@ -44,11 +44,8 @@ async fn main() {
     let sigs = verifier.finish();
 
     for (i, sig) in sigs.into_iter().enumerate() {
-        let h = sig.signature;
-        let s = sig.status;
         println!();
         println!("SIGNATURE {}", i + 1);
-        println!("{h:#?}");
-        println!("{s:?}");
+        println!("{sig:#?}");
     }
 }
