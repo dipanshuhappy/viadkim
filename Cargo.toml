@@ -16,7 +16,7 @@ digest = "0.10.6"
 ed25519-dalek = { version = "2.0.0-rc.2", features = ["pkcs8"] }
 idna = "0.3.0"
 pkcs8 = { version = "0.10.2", features = ["pem"] }
-rsa = "0.9.0-pre.1"
+rsa = "0.9.1"
 sha1 = { version = "0.10.5", features = ["oid"], optional = true }
 sha2 = { version = "0.10.6", features = ["oid"] }
 tokio = { version = "1.26.0", features = ["fs", "macros", "rt", "rt-multi-thread", "sync", "time"] }

@@ -117,7 +117,7 @@ impl AsRef<str> for FieldName {
 
 impl Debug for FieldName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        f.write_str(&self.0)
     }
 }
 

@@ -104,7 +104,7 @@ impl SigningKey {
     pub fn signature_length(&self) -> usize {
         match self {
             Self::Rsa(k) => {
-                use ::rsa::PublicKeyParts;
+                use ::rsa::traits::PublicKeyParts;
                 k.size()
             }
             Self::Ed25519(_) => ::ed25519_dalek::SIGNATURE_LENGTH,

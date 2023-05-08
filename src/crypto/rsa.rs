@@ -1,11 +1,11 @@
 use crate::crypto::{HashAlgorithm, SigningError, VerificationError};
 use rsa::{
-    pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey, Pkcs1v15Sign, PublicKey, PublicKeyParts,
+    pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts, Pkcs1v15Sign,
     RsaPrivateKey, RsaPublicKey,
 };
-use sha2::Sha256;
 #[cfg(feature = "sha1")]
 use sha1::Sha1;
+use sha2::Sha256;
 
 pub fn get_public_key_size(k: &RsaPublicKey) -> usize {
     k.size() * 8
