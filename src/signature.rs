@@ -430,7 +430,7 @@ impl Display for ParseAlgorithmError {
 impl Error for ParseAlgorithmError {}
 
 /// A signature algorithm.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub enum SignatureAlgorithm {
     /// The *rsa-sha256* signature algorithm.
     RsaSha256,
@@ -492,6 +492,12 @@ impl Display for SignatureAlgorithm {
     }
 }
 
+impl fmt::Debug for SignatureAlgorithm {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
 impl FromStr for SignatureAlgorithm {
     type Err = ParseAlgorithmError;
 
@@ -511,7 +517,7 @@ impl FromStr for SignatureAlgorithm {
 }
 
 /// A canonicalization algorithm.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
 pub enum CanonicalizationAlgorithm {
     /// The *simple* canonicalization algorithm.
     #[default]
@@ -532,6 +538,12 @@ impl CanonicalStr for CanonicalizationAlgorithm {
 impl Display for CanonicalizationAlgorithm {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(self.canonical_str())
+    }
+}
+
+impl fmt::Debug for CanonicalizationAlgorithm {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
     }
 }
 
@@ -579,7 +591,7 @@ impl Display for Canonicalization {
 
 impl fmt::Debug for Canonicalization {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}/{:?}", &self.header, &self.body)
+        write!(f, "{self}")
     }
 }
 
