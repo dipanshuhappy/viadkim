@@ -23,7 +23,7 @@ This library is developed independently from scratch, by following the RFC
 specification and related documents. The design objectives sketched below are
 used to guide development.
 
-# Design objectives
+## Design objectives
 
 TODO
 

@@ -21,9 +21,7 @@ impl LookupTxt for TokioAsyncResolver {
                 _ => e.into(),
             })?;
 
-            let txts = lookup
-                .into_iter()
-                .map(|txt| Ok(txt.txt_data().join(&[][..])));
+            let txts = lookup.into_iter().map(|txt| Ok(txt.txt_data().concat()));
 
             let txts: Box<dyn Iterator<Item = _>> = Box::new(txts);
 

@@ -5,7 +5,7 @@ mod request;
 mod sign;
 
 pub use crate::signer::request::{
-    get_default_excluded_headers, get_default_signed_headers, BodyLength, HeaderSelection,
+    default_signed_headers, default_unsigned_headers, BodyLength, HeaderSelection,
     OversignStrategy, SignRequest, Timestamp,
 };
 

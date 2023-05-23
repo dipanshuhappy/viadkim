@@ -4,7 +4,8 @@
 
 use bstr::ByteSlice;
 use std::{
-    fmt::{self, Debug, Formatter},
+    error::Error,
+    fmt::{self, Display, Formatter},
     hash::{Hash, Hasher},
     mem,
 };
@@ -46,50 +47,6 @@ impl AsRef<[HeaderField]> for HeaderFields {
     }
 }
 
-/// Parses a header block into header fields. Convenience function.
-pub fn parse_header(s: &str) -> Result<HeaderFields, HeaderFieldError> {
-    let mut lines = s.lines();
-
-    let first_line = lines.next()
-        .filter(|l| !is_continuation_line(l))
-        .ok_or(HeaderFieldError)?;
-
-    let (mut name, mut value) = split_header_field(first_line)?;
-
-    let mut headers = vec![];
-
-    for line in lines {
-        if is_continuation_line(line) {
-            value.extend(b"\r\n");
-            value.extend(line.bytes());
-        } else {
-            let (next_name, next_value) = split_header_field(line)?;
-            let name = mem::replace(&mut name, next_name);
-            let value = mem::replace(&mut value, next_value);
-            let value = FieldBody::new(value)?;
-            headers.push((name, value));
-        }
-    }
-
-    let value = FieldBody::new(value)?;
-    headers.push((name, value));
-
-    HeaderFields::new(headers)
-}
-
-fn is_continuation_line(s: &str) -> bool {
-    s.starts_with(' ') || s.starts_with('\t')
-}
-
-fn split_header_field(s: &str) -> Result<(FieldName, Vec<u8>), HeaderFieldError> {
-    let (name, value) = s.split_once(':').ok_or(HeaderFieldError)?;
-
-    let name = FieldName::new(name)?;
-    let value = value.bytes().collect();
-
-    Ok((name, value))
-}
-
 // Our `FieldName` allows RFC 5322 header field names; but note that ‘;’ is not
 // practical in DKIM.
 /// A header field name.
@@ -115,7 +72,7 @@ impl AsRef<str> for FieldName {
     }
 }
 
-impl Debug for FieldName {
+impl fmt::Debug for FieldName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
@@ -177,10 +134,141 @@ impl AsRef<[u8]> for FieldBody {
     }
 }
 
-impl Debug for FieldBody {
+impl fmt::Debug for FieldBody {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        self.0.as_bstr().fmt(f)
+        write!(f, "{:?}", self.0.as_bstr())
     }
+}
+
+/// Parses a header block into header fields. Convenience function.
+pub fn parse_header(s: &str) -> Result<HeaderFields, HeaderFieldError> {
+    let mut lines = s.lines();
+
+    let first_line = lines.next()
+        .filter(|l| !is_continuation_line(l))
+        .ok_or(HeaderFieldError)?;
+
+    let (mut name, mut value) = split_header_field(first_line)?;
+
+    let mut headers = vec![];
+
+    for line in lines {
+        if is_continuation_line(line) {
+            value.extend(b"\r\n");
+            value.extend(line.bytes());
+        } else {
+            let (next_name, next_value) = split_header_field(line)?;
+            let name = mem::replace(&mut name, next_name);
+            let value = mem::replace(&mut value, next_value);
+            let value = FieldBody::new(value)?;
+            headers.push((name, value));
+        }
+    }
+
+    let value = FieldBody::new(value)?;
+    headers.push((name, value));
+
+    HeaderFields::new(headers)
+}
+
+fn is_continuation_line(s: &str) -> bool {
+    s.starts_with(' ') || s.starts_with('\t')
+}
+
+fn split_header_field(s: &str) -> Result<(FieldName, Vec<u8>), HeaderFieldError> {
+    let (name, value) = s.split_once(':').ok_or(HeaderFieldError)?;
+
+    let name = FieldName::new(name)?;
+    let value = value.bytes().collect();
+
+    Ok((name, value))
+}
+
+// The header validation utility here allows partial checking for RFC 5322
+// conformance; see DKIM §3.8: ‘Signers and Verifiers SHOULD take reasonable
+// steps to ensure that the messages they are processing are valid according to
+// RFC5322, RFC2045, and any other relevant message format standards.’
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum HeaderValidationError {
+    NoSingleDate,
+    NoSingleFrom,
+    MultipleSender,
+    MultipleReplyTo,
+    MultipleTo,
+    MultipleCc,
+    MultipleBcc,
+    MultipleMessageId,
+    MultipleInReplyTo,
+    MultipleReferences,
+    MultipleSubject,
+}
+
+impl Display for HeaderValidationError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoSingleDate => write!(f, "not exactly one Date header"),
+            Self::NoSingleFrom => write!(f, "not exactly one From header"),
+            Self::MultipleSender => write!(f, "more than one Sender header"),
+            Self::MultipleReplyTo => write!(f, "more than one Reply-To header"),
+            Self::MultipleTo => write!(f, "more than one To header"),
+            Self::MultipleCc => write!(f, "more than one Cc header"),
+            Self::MultipleBcc => write!(f, "more than one Bcc header"),
+            Self::MultipleMessageId => write!(f, "more than one Message-ID header"),
+            Self::MultipleInReplyTo => write!(f, "more than one In-Reply-To header"),
+            Self::MultipleReferences => write!(f, "more than one References header"),
+            Self::MultipleSubject => write!(f, "more than one Subject header"),
+        }
+    }
+}
+
+impl Error for HeaderValidationError {}
+
+/// Validates the given header according to RFC 5322, 3.6.
+pub fn validate_rfc5322(header: impl AsRef<[HeaderField]>) -> Result<(), HeaderValidationError> {
+    fn count_names(header: &[HeaderField], name: &str) -> usize {
+        header.iter().filter(|(n, _)| *n == name).count()
+    }
+
+    let header = header.as_ref();
+
+    if count_names(header, "Date") != 1 {
+        return Err(HeaderValidationError::NoSingleDate);
+    }
+    if count_names(header, "From") != 1 {
+        return Err(HeaderValidationError::NoSingleFrom);
+    }
+    if count_names(header, "Sender") > 1 {
+        return Err(HeaderValidationError::MultipleSender);
+    }
+    if count_names(header, "Reply-To") > 1 {
+        return Err(HeaderValidationError::MultipleReplyTo);
+    }
+    if count_names(header, "To") > 1 {
+        return Err(HeaderValidationError::MultipleTo);
+    }
+    if count_names(header, "Cc") > 1 {
+        return Err(HeaderValidationError::MultipleCc);
+    }
+    if count_names(header, "Bcc") > 1 {
+        return Err(HeaderValidationError::MultipleBcc);
+    }
+    if count_names(header, "Message-ID") > 1 {
+        return Err(HeaderValidationError::MultipleMessageId);
+    }
+    if count_names(header, "In-Reply-To") > 1 {
+        return Err(HeaderValidationError::MultipleInReplyTo);
+    }
+    if count_names(header, "References") > 1 {
+        return Err(HeaderValidationError::MultipleReferences);
+    }
+    if count_names(header, "Subject") > 1 {
+        return Err(HeaderValidationError::MultipleSubject);
+    }
+
+    // TODO additional checks? eg MUST have Sender if multiple mailboxes in From
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -224,5 +312,32 @@ mod tests {
             ),
         ])
         .is_ok());
+    }
+
+    #[test]
+    fn validate_rfc5322_ok() {
+        let mut header = vec![
+            (
+                FieldName::new("Date").unwrap(),
+                FieldBody::new(*b" Mon, 22 May 2023 11:59:28 +0200").unwrap(),
+            ),
+            (
+                FieldName::new("From").unwrap(),
+                FieldBody::new(*b" me").unwrap(),
+            ),
+            (
+                FieldName::new("To").unwrap(),
+                FieldBody::new(*b" you").unwrap(),
+            ),
+        ];
+
+        assert_eq!(validate_rfc5322(&header), Ok(()));
+
+        header.push((
+            FieldName::new("fRom").unwrap(),
+            FieldBody::new(*b" me too").unwrap(),
+        ));
+
+        assert_eq!(validate_rfc5322(&header), Err(HeaderValidationError::NoSingleFrom));
     }
 }

@@ -67,12 +67,16 @@ pub enum OversignStrategy {
     Selected(HashSet<FieldName>),
 }
 
-pub fn get_default_signed_headers() -> Vec<FieldName> {
-    // The default signed headers are listed (labelled only ‘common examples’)
-    // in §5.4.1. They are the same as in OpenDKIM (minus *Resent-Sender*:
-    // *Sender* and *Resent-Sender* were removed between RFC 4871 and 6376, but
-    // the latter was left in OpenDKIM probably by mistake).
-    let def = [
+/// Returns a collection of headers that should be signed.
+///
+/// RFC 6376 does not actually recommend a specific set of headers to be signed.
+/// Instead, the collection returned here contains the so-called ‘examples’ from
+/// section 5.4.1.
+pub fn default_signed_headers() -> Vec<FieldName> {
+    // This set is the same as in OpenDKIM (minus *Resent-Sender*: *Sender* and
+    // *Resent-Sender* were removed between RFC 4871 and 6376, but the latter
+    // was left in OpenDKIM possibly by mistake).
+    let names = [
         "From",
         "Reply-To",
         "Subject",
@@ -93,19 +97,31 @@ pub fn get_default_signed_headers() -> Vec<FieldName> {
         "List-Owner",
         "List-Archive",
     ];
-    def.into_iter().map(|x| FieldName::new(x).unwrap()).collect()
+
+    names
+        .into_iter()
+        .map(|n| FieldName::new(n).unwrap())
+        .collect()
 }
 
-pub fn get_default_excluded_headers() -> Vec<FieldName> {
-    // The default excluded headers are listed again in §5.4.1. They are the
-    // same as in OpenDKIM.
-    let def = [
+/// Returns a collection of headers that should be excluded from a signature.
+///
+/// RFC 6376 does not actually recommend a specific set of headers to be
+/// excluded. Instead, the collection returned here contains the so-called
+/// ‘examples’ from section 5.4.1.
+pub fn default_unsigned_headers() -> Vec<FieldName> {
+    // This set is the same as in OpenDKIM.
+    let names = [
         "Return-Path",
         "Received",
         "Comments",
         "Keywords",
     ];
-    def.into_iter().map(|x| FieldName::new(x).unwrap()).collect()
+
+    names
+        .into_iter()
+        .map(|n| FieldName::new(n).unwrap())
+        .collect()
 }
 
 pub struct SignRequest<T> {
@@ -142,7 +158,7 @@ impl<T> SignRequest<T> {
     ) -> Self {
         let user_id = None;
         let header_selection = HeaderSelection::Pick {
-            include: get_default_signed_headers().into_iter().collect(),
+            include: default_signed_headers().into_iter().collect(),
             oversign: OversignStrategy::None,
         };
 
@@ -158,7 +174,9 @@ impl<T> SignRequest<T> {
             body_length: BodyLength::All,
             copy_headers: false,
             timestamp: Some(Timestamp::Now),
+            // TODO forbid zero duration -> would create invalid signature
             valid_duration: Some(Duration::from_secs(60 * 60 * 24 * 5)),  // five days
+            // note that five days is also used as duration in the example in §3.5
             header_name: DKIM_SIGNATURE_NAME.into(),
 
             line_width: LINE_WIDTH,
