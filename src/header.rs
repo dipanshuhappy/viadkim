@@ -1,6 +1,15 @@
 //! Representation of email header data.
 //!
 //! See RFC 5322, section 2.2.
+//!
+//! API documentation in viadkim uses the term *header* in various places.
+//! *Header* is an ambiguous term: it can refer to the entire header section
+//! (‘the header is separated from the body by an empty line’), or to an entry
+//! in the header section, ie a header field (‘a header that spans multiple
+//! lines’), or also to a particular well-known header field by name (‘the
+//! *From* header must be present’). Context should make clear which
+//! interpretation is appropriate in each case, else the term is disambiguated
+//! in some way. See also the note at the end of RFC 5322, section 2.1.
 
 use bstr::ByteSlice;
 use std::{

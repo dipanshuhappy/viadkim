@@ -41,7 +41,7 @@ async fn main() {
     request.valid_duration = None;
     request.copy_headers = false;
     // request.body_length = viadkim::signer::BodyLength::OnlyMessageLength;
-    // request.user_id = Some(viadkim::signature::Identity::new("\"abc;de\"@中文.gluet.ch").unwrap());
+    // request.identity = Some(viadkim::signature::Identity::new("\"abc;de\"@中文.gluet.ch").unwrap());
     // request.algorithm = SignatureAlgorithm::RsaSha1;
 
     let mut msg = String::new();

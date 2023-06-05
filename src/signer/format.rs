@@ -18,7 +18,7 @@ pub struct UnsignedDkimSignature {
     pub canonicalization: Canonicalization,
     pub domain: DomainName,
     pub signed_headers: Box<[FieldName]>,
-    pub user_id: Option<Identity>,
+    pub identity: Option<Identity>,
     pub body_length: Option<u64>,
     pub selector: Selector,
     pub timestamp: Option<u64>,
@@ -48,7 +48,7 @@ impl UnsignedDkimSignature {
             canonicalization: self.canonicalization,
             domain: self.domain,
             signed_headers: self.signed_headers,
-            user_id: self.user_id,
+            identity: self.identity,
             body_length: self.body_length,
             selector: self.selector,
             timestamp: self.timestamp,
@@ -83,7 +83,7 @@ fn format_without_signature(
     let selector = sig.selector.to_unicode();
     format_tag_into_string(&mut result, width, &mut i, "s", &selector);
 
-    if let Some(Identity { local_part, domain_part }) = &sig.user_id {
+    if let Some(Identity { local_part, domain_part }) = &sig.identity {
         let d = domain_part.to_unicode();
 
         // in i= value substitute =3B for ; and =20 for space

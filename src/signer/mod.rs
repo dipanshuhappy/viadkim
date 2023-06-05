@@ -5,8 +5,8 @@ mod request;
 mod sign;
 
 pub use crate::signer::request::{
-    default_signed_headers, default_unsigned_headers, BodyLength, HeaderSelection,
-    OversignStrategy, SignRequest, Timestamp,
+    default_signed_headers, default_unsigned_headers, select_headers, BodyLength, HeaderSelection,
+    SignRequest, Timestamp,
 };
 
 use crate::{
@@ -62,6 +62,20 @@ pub enum SigningStatus {
 }
 
 /// A signer for an email message.
+///
+/// `Signer` is the high-level API for signing a message. It implements a
+/// three-phase, staged design that allows processing the message in chunks.
+///
+/// 1. [`prepare_signing`][Signer::prepare_signing]: first, a number of signing
+///    requests together with the message header allow construction of a signer
+/// 2. [`body_chunk`][Signer::body_chunk]: then, any number of chunks of the
+///    message body are fed to the signing process
+/// 3. **[`finish`][Signer::finish]** (async): finally, the initial signing
+///    requests are answered by performing signing and returning the results;
+///    this is where most of the actual work is done
+///
+/// Compare this with the similar but distinct procedure of
+/// [`Verifier`][crate::verifier::Verifier].
 pub struct Signer<T> {
     tasks: Vec<SigningTask<T>>,  // non-empty
     headers: HeaderFields,
@@ -94,7 +108,7 @@ where
 
             // TODO check that From is in signed headers, does not contain ; here already?
 
-            // TODO check user id domain is subdomain of signing domain
+            // TODO check identity domain is subdomain of signing domain
 
             let body_length = match request::convert_body_length(request.body_length) {
                 Ok(b) => b,
@@ -136,6 +150,7 @@ where
     }
 
     // Doesn't actually need async, but may use it to introduce artificial await points?
+    /// Performs the actual signing and returns the resulting signatures.
     pub async fn finish(self) -> Vec<SigningResult> {
         let hasher_results = self.body_hasher.finish();
 

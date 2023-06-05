@@ -1,6 +1,21 @@
 //! DKIM library.
 //!
-//! *experimental, in development*
+//! 🚧
+//!
+//! ***experimental, in development***
+//!
+//! 🏗
+//!
+//! A library implementing the *DomainKeys Identified Mail* (DKIM) specification
+//! described in RFC 6376.
+//!
+//! This library provides APIs to sign email messages using DKIM signatures, and
+//! to verify such signatures.
+//!
+//! # Usage
+//!
+//! The types [`Signer`] and [`Verifier`] provide the entry points to signing
+//! and verifying with viadkim.
 //!
 //! # Cargo features
 //!

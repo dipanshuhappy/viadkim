@@ -118,7 +118,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "depends on live DNS records"]
     async fn look_up_live_dkim_key_record() {
-        let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default()).unwrap();
+        let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default());
 
         let r = look_up_records(&resolver, "gluet.ch", "ed25519.2022")
             .await

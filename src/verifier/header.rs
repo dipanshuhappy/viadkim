@@ -317,7 +317,7 @@ async fn verify_task(
             hash_alg,
             key_record,
             &sig.domain,
-            sig.user_id.as_ref(),
+            sig.identity.as_ref(),
         ) {
             // record last error seen
             task.status = Some(VerificationStatus::Failure(e));
@@ -387,7 +387,7 @@ fn validate_key_record(
     hash_alg: HashAlgorithm,
     rec: &DkimKeyRecord,
     domain: &DomainName,
-    user_id: Option<&Identity>,
+    identity: Option<&Identity>,
 ) -> Result<(), VerifierError> {
     if rec.key_type != key_type {
         trace!("wrong public key type");
@@ -406,8 +406,8 @@ fn validate_key_record(
     if rec.flags.contains(&Flags::NoSubdomains) {
         // assumes that parsing already validated that i= domain is subdomain of d=
         // need to compare A-label form (case-normalised) strings
-        if let Some(user_id) = user_id {
-            if domain.to_ascii() != user_id.domain_part.to_ascii() {
+        if let Some(identity) = identity {
+            if domain.to_ascii() != identity.domain_part.to_ascii() {
                 trace!("domain mismatch");
                 return Err(VerifierError::DomainMismatch);
             }

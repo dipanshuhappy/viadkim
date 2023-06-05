@@ -11,21 +11,21 @@ repository = "https://gitlab.com/glts/viadkim"
 
 [dependencies]
 base64ct = { version = "1.6.0", features = ["alloc"] }
-bstr = { version = "1.4.0", default-features = false, features = ["std"] }
-digest = "0.10.6"
+bstr = { version = "1.5.0", default-features = false, features = ["std"] }
+digest = "0.10.7"
 ed25519-dalek = { version = "2.0.0-rc.2", features = ["pkcs8"] }
 idna = "0.3.0"
 pkcs8 = { version = "0.10.2", features = ["pem"] }
-rsa = "0.9.1"
+rsa = "0.9.2"
 sha1 = { version = "0.10.5", features = ["oid"], optional = true }
 sha2 = { version = "0.10.6", features = ["oid"] }
-tokio = { version = "1.26.0", features = ["fs", "macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.28.2", features = ["fs", "macros", "rt", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1.37"
-trust-dns-resolver = { version = "0.23.0-alpha.2", optional = true }
+trust-dns-resolver = { version = "0.23.0-alpha.3", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.26.0", features = ["io-std", "io-util"] }
-tracing-subscriber = "0.3.16"
+tokio = { version = "1.28.2", features = ["io-std", "io-util"] }
+tracing-subscriber = "0.3.17"
 
 [[example]]
 name = "dkimverify"

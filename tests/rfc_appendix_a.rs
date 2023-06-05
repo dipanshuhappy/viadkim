@@ -8,7 +8,7 @@ use tokio::fs;
 use viadkim::{
     crypto::SigningKey,
     signature::{DomainName, Selector, SignatureAlgorithm},
-    signer::{HeaderSelection, SignRequest, SigningStatus},
+    signer::{self, HeaderSelection, SignRequest, SigningStatus},
     verifier::{LookupTxt, VerificationStatus},
     FieldName, HeaderFields, Signer, Verifier,
 };
@@ -104,6 +104,7 @@ async fn rfc_appendix_a_spki() {
 async fn sign_roundtrip() {
     let _ = tracing_subscriber::fmt::try_init();
 
+    let headers = make_header_fields();
     let body = make_body();
 
     let s = fs::read_to_string("tests/brisbane_private.pem").await.unwrap();
@@ -115,19 +116,18 @@ async fn sign_roundtrip() {
         SignatureAlgorithm::RsaSha256,
         signing_key,
     );
-    req.header_selection = HeaderSelection::Pick {
-        include: HashSet::from([
-            FieldName::new("Received").unwrap(),
-            FieldName::new("From").unwrap(),
-            FieldName::new("To").unwrap(),
-            FieldName::new("Subject").unwrap(),
-            FieldName::new("Date").unwrap(),
-            FieldName::new("Message-ID").unwrap(),
-        ]),
-        oversign: Default::default(),
-    };
 
-    let headers = make_header_fields();
+    let def: HashSet<_> = HashSet::from([
+        FieldName::new("Received").unwrap(),
+        FieldName::new("From").unwrap(),
+        FieldName::new("To").unwrap(),
+        FieldName::new("Subject").unwrap(),
+        FieldName::new("Date").unwrap(),
+        FieldName::new("Message-ID").unwrap(),
+    ]);
+    let signed_headers = signer::select_headers(&headers, move |name| def.contains(name));
+
+    req.header_selection = HeaderSelection::Manual(signed_headers.cloned().collect());
 
     let mut signer = Signer::prepare_signing([req], headers).unwrap();
 

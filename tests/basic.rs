@@ -7,7 +7,7 @@ use viadkim::{HeaderFields, Verifier};
 async fn basic_verify() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default()).unwrap();
+    let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default());
 
     let headers: Vec<(String, Vec<u8>)> = vec![
         ("From".into(), b" me <here@now.com>".to_vec()),

@@ -1,11 +1,11 @@
 use crate::{
-    header::FieldName,
+    header::{FieldName, HeaderFields},
     signature::{
         Canonicalization, DomainName, Identity, Selector, SignatureAlgorithm, DKIM_SIGNATURE_NAME,
     },
     signer::format::LINE_WIDTH,
 };
-use std::{collections::HashSet, num::TryFromIntError, time::Duration};
+use std::{num::TryFromIntError, time::Duration};
 
 /// A generator for the body length limit tag.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -36,35 +36,26 @@ pub enum Timestamp {
     Exact(u64),
 }
 
-// TODO derive Default?
-/// A strategy for selecting headers for the h= tag, given some `HeaderFields`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum HeaderSelection {
-    /// Pick only the headers specified in `include`, if present.
-    Pick {
-        include: HashSet<FieldName>,
-        oversign: OversignStrategy,
-    },
-    /// Select all headers present, except the ones specified in `exclude`.
-    All {
-        exclude: HashSet<FieldName>,
-        oversign: OversignStrategy,
-    },
-    /// Use exactly the headers given here as contents of the h= tag.
-    Manual(Vec<FieldName>),
+/// Selects all headers matching the predicate, in reverse (evaluation order).
+pub fn select_headers<'a, 'b: 'a>(
+    headers: &'a HeaderFields,
+    mut pred: impl FnMut(&FieldName) -> bool + 'b,
+) -> impl DoubleEndedIterator<Item = &FieldName> + 'a {
+    headers
+        .as_ref()
+        .iter()
+        .rev()
+        .filter_map(move |(name, _)| if pred(name) { Some(name) } else { None })
 }
 
-/// A strategy to determine which headers to ‘oversign’ (sign once more than
-/// actually present in the message).
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub enum OversignStrategy {
-    /// No oversigning.
-    #[default]
-    None,
-    /// Oversign all selected headers.
-    All,
-    /// Oversign only these headers.
-    Selected(HashSet<FieldName>),
+// TODO derive Default?
+/// Selection of headers to include in the h= tag.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HeaderSelection {
+    /// Given some `HeaderFields`, select the headers in the default set.
+    Auto,
+    /// Use exactly the headers given here as contents of the h= tag.
+    Manual(Vec<FieldName>),
 }
 
 /// Returns a collection of headers that should be signed.
@@ -133,7 +124,7 @@ pub struct SignRequest<T> {
     pub canonicalization: Canonicalization,
     pub header_selection: HeaderSelection,
     pub domain: DomainName,
-    pub user_id: Option<Identity>,
+    pub identity: Option<Identity>,
     pub selector: Selector,
     pub body_length: BodyLength,
     pub copy_headers: bool,  // copy all headers used to create the signature in z= tag
@@ -156,11 +147,8 @@ impl<T> SignRequest<T> {
         algorithm: SignatureAlgorithm,
         signing_key: T,
     ) -> Self {
-        let user_id = None;
-        let header_selection = HeaderSelection::Pick {
-            include: default_signed_headers().into_iter().collect(),
-            oversign: OversignStrategy::None,
-        };
+        let identity = None;
+        let header_selection = HeaderSelection::Auto;
 
         Self {
             signing_key,
@@ -169,7 +157,7 @@ impl<T> SignRequest<T> {
             canonicalization: Default::default(),
             header_selection,
             domain,
-            user_id,
+            identity,
             selector,
             body_length: BodyLength::All,
             copy_headers: false,
@@ -181,5 +169,38 @@ impl<T> SignRequest<T> {
 
             line_width: LINE_WIDTH,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::header::FieldBody;
+    use std::collections::HashSet;
+
+    #[test]
+    fn select_headers_ok() {
+        let headers = make_header_fields(["From", "Aa", "Bb", "Aa", "Dd"]);
+
+        let names = make_field_names(["from", "aa", "bb", "cc"]);
+
+        let selection = select_headers(&headers, move |name| names.contains(name));
+
+        assert!(selection.map(|n| n.as_ref()).eq(["Aa", "Bb", "Aa", "From"]));
+    }
+
+    fn make_header_fields(names: impl IntoIterator<Item = &'static str>) -> HeaderFields {
+        let names: Vec<_> = names
+            .into_iter()
+            .map(|name| (FieldName::new(name).unwrap(), FieldBody::new(*b"").unwrap()))
+            .collect();
+        HeaderFields::new(names).unwrap()
+    }
+
+    fn make_field_names(names: impl IntoIterator<Item = &'static str>) -> HashSet<FieldName> {
+        names
+            .into_iter()
+            .map(|name| FieldName::new(name).unwrap())
+            .collect()
     }
 }

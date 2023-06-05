@@ -9,9 +9,9 @@
 //!
 //! In RFC 6376 a bad mistake was made in the description of the public key
 //! creation. Section 3.6.1 states that the p= tag contains an RSA public key in
-//! format RSAPublicKey (RFC 3447). However, the example in appendix C shows how
-//! to install an RSA public key in format SubjectPublicKeyInfo (RFC 5280) in
-//! the DNS.
+//! format *RSAPublicKey* (RFC 3447). However, the example in appendix C shows
+//! how to install an RSA public key in format *SubjectPublicKeyInfo* (RFC 5280)
+//! in the DNS.
 //!
 //! It is the second, slightly larger, format that implementers have taken as
 //! authoritative and that has become widespread. In other words, the
@@ -20,7 +20,7 @@
 //! (which is now apparently not universally supported).
 //!
 //! Several errata describing this problem in different wording have been filed
-//! over the years.
+//! over the years ([2011], [2021], [2022]).
 //!
 //! Because of this situation, viadkim first tries reading the public key in DNS
 //! in the (de-facto standard) SubjectPublicKeyInfo format. If this fails it
@@ -46,6 +46,10 @@
 //! as the Base64-encoded raw bytes of an Ed25519 public key. If this fails, it
 //! falls back to trying reading the public key in the (non-standard)
 //! SubjectPublicKeyInfo format.
+//!
+//! [2011]: https://www.rfc-editor.org/errata/eid3017
+//! [2021]: https://www.rfc-editor.org/errata/eid6674
+//! [2022]: https://www.rfc-editor.org/errata/eid7001
 
 mod ed25519;
 mod hash;

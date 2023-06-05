@@ -4,7 +4,7 @@ use crate::{
     message_hash::{self, BodyHasherError, BodyHasherResults},
     signer::{
         format::{self, UnsignedDkimSignature},
-        request::{self, BodyLength, HeaderSelection, OversignStrategy, SignRequest, Timestamp},
+        request::{self, BodyLength, HeaderSelection, SignRequest, Timestamp},
         SignerError, SigningResult, SigningStatus,
     },
 };
@@ -61,10 +61,10 @@ where
 
     // select headers
 
-    let signed_headers = select_signed_headers(
-        &request.header_selection,
-        headers,
-    );
+    let signed_headers = match &request.header_selection {
+        HeaderSelection::Auto => select_signed_headers(headers).into_iter().cloned().collect(),
+        HeaderSelection::Manual(h) => h.clone(),
+    };
 
     // signed headers must include From
     if !signed_headers.iter().any(|name| *name == "From") {
@@ -113,7 +113,7 @@ where
         canonicalization: request.canonicalization,
         domain: request.domain,
         signed_headers: signed_headers.into(),
-        user_id: request.user_id,
+        identity: request.identity,
         body_length,
         selector: request.selector,
         timestamp,
@@ -130,73 +130,9 @@ where
     ).await
 }
 
-fn select_signed_headers(
-    header_selection: &HeaderSelection,
-    headers: &HeaderFields,
-) -> Vec<FieldName> {
-    let (names, oversign) = match header_selection {
-        HeaderSelection::Pick { include, oversign } => {
-            let names: Vec<_> = headers
-                .as_ref()
-                .iter()
-                .rev()
-                .filter_map(|(name, _)| {
-                    if include.contains(name) ||
-                        matches!(oversign, OversignStrategy::Selected(names) if names.contains(name))
-                    {
-                        Some(name)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            (names, oversign)
-        }
-        HeaderSelection::All { exclude, oversign } => {
-            let names: Vec<_> = headers
-                .as_ref()
-                .iter()
-                .rev()
-                .filter_map(|(name, _)| {
-                    if exclude.contains(name) &&
-                        !matches!(oversign, OversignStrategy::Selected(names) if names.contains(name))
-                    {
-                        None
-                    } else {
-                        Some(name)
-                    }
-                })
-                .collect();
-            (names, oversign)
-        }
-        HeaderSelection::Manual(names) => {
-            return names.clone();
-        }
-    };
-
-    let mut oversigned_names: HashSet<_> = match oversign {
-        OversignStrategy::None => return names.into_iter().cloned().collect(),
-        OversignStrategy::All => names.iter().copied().collect(),
-        OversignStrategy::Selected(oversigned_names) => oversigned_names.iter().collect(),
-    };
-
-    let oversigned: Vec<_> = names
-        .iter()
-        .filter(|&name| oversigned_names.remove(name))
-        .copied()
-        .collect();
-
-    // Remaining oversigned headers are not present in `HeaderFields`; add one
-    // more instance of these (in alphabetical order for some determinism).
-    let mut remaining: Vec<_> = oversigned_names.into_iter().collect();
-    remaining.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
-
-    names
-        .into_iter()
-        .chain(oversigned)
-        .chain(remaining)
-        .cloned()
-        .collect()
+fn select_signed_headers(headers: &HeaderFields) -> Vec<&FieldName> {
+    let def: HashSet<_> = request::default_signed_headers().into_iter().collect();
+    request::select_headers(headers, move |name| def.contains(name)).collect()
 }
 
 async fn produce_signature(
@@ -321,77 +257,5 @@ async fn sign_hash(
                 Err(SignerError::SigningFailure)
             }
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::header::FieldBody;
-
-    #[test]
-    fn select_signed_headers_oversign_all() {
-        let headers = make_header_fields(["From", "Aa", "Bb", "Cc", "Aa", "Ee"]);
-
-        let selection = HeaderSelection::Pick {
-            include: make_field_names(["from", "aa", "bb"]),
-            oversign: OversignStrategy::All,
-        };
-
-        let selected_headers = select_signed_headers(&selection, &headers);
-
-        assert!(selected_headers
-            .iter()
-            .map(|n| n.as_ref())
-            .eq(["Aa", "Bb", "Aa", "From", "Aa", "Bb", "From"]));
-    }
-
-    #[test]
-    fn select_signed_headers_oversign_some() {
-        let headers = make_header_fields(["From", "Aa", "Bb", "Cc", "Aa", "Ee"]);
-
-        let selection = HeaderSelection::Pick {
-            include: make_field_names(["from", "aa", "bb"]),
-            oversign: OversignStrategy::Selected(make_field_names(["bb", "cc", "dd"])),
-        };
-
-        let selected_headers = select_signed_headers(&selection, &headers);
-
-        assert!(selected_headers
-            .iter()
-            .map(|n| n.as_ref())
-            .eq(["Aa", "Cc", "Bb", "Aa", "From", "Cc", "Bb", "dd"]));
-    }
-
-    #[test]
-    fn select_signed_headers_all() {
-        let headers = make_header_fields(["From", "Aa", "Bb", "Cc", "Aa", "Ee"]);
-
-        let selection = HeaderSelection::All {
-            exclude: make_field_names(["aa", "bb"]),
-            oversign: OversignStrategy::Selected(make_field_names(["to", "ee"])),
-        };
-
-        let selected_headers = select_signed_headers(&selection, &headers);
-
-        assert!(selected_headers
-            .iter()
-            .map(|n| n.as_ref())
-            .eq(["Ee", "Cc", "From", "Ee", "to"]));
-    }
-
-    fn make_header_fields(names: impl IntoIterator<Item = &'static str>) -> HeaderFields {
-        let names: Vec<_> = names
-            .into_iter()
-            .map(|name| (FieldName::new(name).unwrap(), FieldBody::new(*b"").unwrap()))
-            .collect();
-        HeaderFields::new(names).unwrap()
-    }
-
-    fn make_field_names(names: impl IntoIterator<Item = &'static str>) -> HashSet<FieldName> {
-        names
-            .into_iter()
-            .map(|name| FieldName::new(name).unwrap())
-            .collect()
     }
 }

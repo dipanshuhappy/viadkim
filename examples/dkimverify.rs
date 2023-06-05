@@ -28,7 +28,7 @@ async fn main() {
     let headers = header::parse_header(header).unwrap();
     // dbg!(&headers);
 
-    let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default()).unwrap();
+    let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default());
 
     let config = Config {
         fail_if_expired: false,

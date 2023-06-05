@@ -156,7 +156,7 @@ impl VerificationStatus {
                     | DkimSignatureErrorKind::MissingSelectorTag
                     | DkimSignatureErrorKind::DomainMismatch
                     | DkimSignatureErrorKind::ExpirationNotAfterTimestamp
-                    | DkimSignatureErrorKind::InvalidUserId => AuthResultsKind::Permerror,
+                    | DkimSignatureErrorKind::InvalidIdentity => AuthResultsKind::Permerror,
                     DkimSignatureErrorKind::UnsupportedVersion
                     | DkimSignatureErrorKind::UnsupportedAlgorithm
                     | DkimSignatureErrorKind::UnsupportedCanonicalization
@@ -319,6 +319,22 @@ struct SigTask {
 }
 
 /// A verifier of DKIM signatures in an email message.
+///
+/// `Verifier` is the high-level API for verifying a message. It implements a
+/// three-phase, staged design that allows processing the message in chunks, and
+/// shortcutting unnecessary body processing.
+///
+/// 1. **[`process_header`][Verifier::process_header]** (async): first,
+///    perform signature verification on the message header and return a
+///    verifier that carries the (preliminary) results; this is where most of
+///    the actual work is done
+/// 2. [`body_chunk`][Verifier::body_chunk]: then, any number of chunks of the
+///    message body are fed to the verification process
+/// 3. [`finish`][Verifier::finish]: finally, the body hashes are computed and
+///    the final verification results are returned
+///
+/// Compare this with the similar but distinct procedure of
+/// [`Signer`][crate::signer::Signer].
 pub struct Verifier {
     tasks: Vec<SigTask>,
     body_hasher: BodyHasher,
@@ -376,6 +392,7 @@ impl Verifier {
         self.body_hasher.hash_chunk(chunk)
     }
 
+    /// Finishes the verification process and returns the results.
     pub fn finish(self) -> Vec<VerificationResult> {
         let mut result = vec![];
 

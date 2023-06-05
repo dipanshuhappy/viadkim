@@ -651,7 +651,7 @@ pub enum DkimSignatureErrorKind {
     InvalidExpiration,
     InvalidCopiedHeaderField,
     DomainMismatch,
-    InvalidUserId,
+    InvalidIdentity,
     ExpirationNotAfterTimestamp,
     Utf8Encoding,
     InvalidTagList,
@@ -683,7 +683,7 @@ impl Display for DkimSignatureErrorKind {
             Self::InvalidExpiration => write!(f, "invalid expiration"),
             Self::InvalidCopiedHeaderField => write!(f, "invalid header field in z= tag"),
             Self::DomainMismatch => write!(f, "domain mismatch"),
-            Self::InvalidUserId => write!(f, "invalid user ID"),
+            Self::InvalidIdentity => write!(f, "invalid identity"),
             Self::ExpirationNotAfterTimestamp => write!(f, "expiration not after timestamp"),
             Self::Utf8Encoding => write!(f, "signature not UTF-8 encoded"),
             Self::InvalidTagList => write!(f, "invalid tag-list"),
@@ -691,7 +691,7 @@ impl Display for DkimSignatureErrorKind {
     }
 }
 
-/// DKIM signature data as encoded in a `DKIM-Signature` header field.
+/// DKIM signature data as encoded in a *DKIM-Signature* header field.
 ///
 /// The *v=* tag (always 1) and the *q=* tag (always includes dns/txt) are not
 /// included.
@@ -723,7 +723,7 @@ pub struct DkimSignature {
     /// The *h=* tag.
     pub signed_headers: Box<[FieldName]>,  // not empty, no names containing `;`
     /// The *i=* tag.
-    pub user_id: Option<Identity>,  // rename "user" or "agent" or simply "identity"?
+    pub identity: Option<Identity>,
     /// The *l=* tag.
     pub body_length: Option<u64>,
     /// The *s=* tag.
@@ -748,7 +748,7 @@ impl DkimSignature {
         let mut canonicalization = None;
         let mut domain = None;
         let mut signed_headers = None;
-        let mut user_id = None;
+        let mut identity = None;
         let mut body_length = None;
         let mut selector = None;
         let mut timestamp = None;
@@ -822,11 +822,11 @@ impl DkimSignature {
                 }
                 "i" => {
                     let value = parse_dqp_tag_value(value)
-                        .map_err(|_| DkimSignatureErrorKind::InvalidUserId)?;
+                        .map_err(|_| DkimSignatureErrorKind::InvalidIdentity)?;
                     let value = Identity::new(&value)
-                        .map_err(|_| DkimSignatureErrorKind::InvalidUserId)?;
+                        .map_err(|_| DkimSignatureErrorKind::InvalidIdentity)?;
 
-                    user_id = Some(value);
+                    identity = Some(value);
                 }
                 "l" => {
                     let value = value.parse()
@@ -895,7 +895,7 @@ impl DkimSignature {
         let signed_headers = signed_headers.ok_or(DkimSignatureErrorKind::MissingSignedHeadersTag)?;
         let selector = selector.ok_or(DkimSignatureErrorKind::MissingSelectorTag)?;
 
-        if let Some(id) = &user_id {
+        if let Some(id) = &identity {
             if !id.domain_part.eq_or_subdomain_of(&domain) {
                 return Err(DkimSignatureErrorKind::DomainMismatch);
             }
@@ -922,7 +922,7 @@ impl DkimSignature {
             canonicalization,
             domain,
             signed_headers,
-            user_id,
+            identity,
             body_length,
             selector,
             timestamp,
@@ -987,7 +987,7 @@ impl fmt::Debug for DkimSignature {
             .field("canonicalization", &self.canonicalization)
             .field("domain", &self.domain)
             .field("signed_headers", &self.signed_headers)
-            .field("user_id", &self.user_id)
+            .field("identity", &self.identity)
             .field("body_length", &self.body_length)
             .field("selector", &self.selector)
             .field("timestamp", &self.timestamp)
@@ -1109,7 +1109,7 @@ mod tests {
                     FieldName::new("date").unwrap(),
                 ]
                 .into(),
-                user_id: Some(Identity::new("@eng.example.net").unwrap()),
+                identity: Some(Identity::new("@eng.example.net").unwrap()),
                 selector: Selector::new("brisbane").unwrap(),
                 body_length: None,
                 timestamp: Some(1117574938),
@@ -1181,7 +1181,7 @@ mod tests {
                     FieldName::new("date").unwrap(),
                 ]
                 .into(),
-                user_id: Some(Identity::new("中文@eng.example.net").unwrap()),
+                identity: Some(Identity::new("中文@eng.example.net").unwrap()),
                 selector: Selector::new("brisbane").unwrap(),
                 body_length: None,
                 timestamp: Some(1117574938),
