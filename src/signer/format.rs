@@ -3,14 +3,15 @@ use crate::{
     quoted_printable,
     signature::{
         Canonicalization, CanonicalizationAlgorithm, DkimSignature, DomainName, Identity, Selector,
-        SignatureAlgorithm, DKIM_SIGNATURE_NAME,
+        SignatureAlgorithm,
     },
     util::{self, CanonicalStr},
 };
-use std::{fmt::Write, iter};
+use std::{cmp::Ordering, fmt::Write, iter};
 
-// careful with offsets: formatting works on characters not bytes!
+// Note: Careful with offsets: formatting works with *characters*, not bytes!
 
+/// DKIM signature data that does not yet have a cryptographic signature.
 #[derive(Clone, Eq, PartialEq)]
 pub struct UnsignedDkimSignature {
     pub algorithm: SignatureAlgorithm,
@@ -23,21 +24,22 @@ pub struct UnsignedDkimSignature {
     pub selector: Selector,
     pub timestamp: Option<u64>,
     pub expiration: Option<u64>,
-    pub copied_headers: Option<Box<[(FieldName, Box<[u8]>)]>>,
+    pub copied_headers: Box<[(FieldName, Box<[u8]>)]>,
+    pub extra_tags: Box<[(Box<str>, Box<str>)]>,
 }
 
 impl UnsignedDkimSignature {
-    // Returns the formatted signature without the b= value, and the index where
-    // the b= value is to be inserted.
-    // width: *char-based* line width
-    // b_tag_len: *char-based* b= tag value length
+    /// Returns the formatted signature without the *b=* tag value, and the
+    /// index where the *b=* tag value is to be inserted.
     pub fn format_without_signature(
         &self,
         header_name: &str,
         width: usize,
+        indentation: &str,
         b_tag_len: usize,
+        tag_order: Option<&(dyn Fn(&str, &str) -> Ordering + Send + Sync)>,
     ) -> (String, usize) {
-        format_without_signature(self, header_name, width, b_tag_len)
+        format_without_signature(self, header_name, width, indentation, b_tag_len, tag_order)
     }
 
     pub fn into_signature(self, signature_data: Box<[u8]>) -> DkimSignature {
@@ -54,264 +56,371 @@ impl UnsignedDkimSignature {
             timestamp: self.timestamp,
             expiration: self.expiration,
             copied_headers: self.copied_headers,
-            extra_tags: None,
+            extra_tags: self.extra_tags,
         }
     }
 }
 
 pub const LINE_WIDTH: usize = 78;
 
+pub fn is_output_tag(name: &str) -> bool {
+    matches!(
+        name,
+        "v" | "a" | "b" | "bh" | "c" | "d" | "h" | "i" | "l" | "s" | "t" | "x" | "z"
+    )
+}
+
+/// Selects and sorts the tags to include in the signature.
+fn compute_tag_names<'a>(
+    sig: &'a UnsignedDkimSignature,
+    tag_order: Option<&(dyn Fn(&str, &str) -> Ordering + Send + Sync)>,
+) -> Vec<&'a str> {
+    use CanonicalizationAlgorithm::*;
+
+    let mut names = Vec::with_capacity(16);
+
+    names.push("v");
+    names.push("d");
+    names.push("s");
+    sig.identity.is_some().then(|| names.push("i"));
+    names.push("a");
+
+    // Note: tag q=dns/txt is omitted.
+
+    let c = sig.canonicalization;
+    if !matches!((c.header, c.body), (Simple, Simple)) {
+        names.push("c");
+    }
+
+    sig.body_length.is_some().then(|| names.push("l"));
+    sig.timestamp.is_some().then(|| names.push("t"));
+    sig.expiration.is_some().then(|| names.push("x"));
+    names.push("h");
+    names.push("bh");
+    names.push("b");
+
+    if !sig.copied_headers.is_empty() {
+        names.push("z");
+    }
+
+    for (t, _) in sig.extra_tags.iter() {
+        names.push(t);
+    }
+
+    if let Some(tag_order) = tag_order {
+        names.sort_by(|a, b| tag_order(a, b));
+    }
+
+    names
+}
+
+#[derive(Clone, Copy)]
+struct Fmt<'a> {
+    width: usize,
+    indent: &'a str,
+    last: bool,
+}
+
 fn format_without_signature(
     sig: &UnsignedDkimSignature,
     header_name: &str,
     width: usize,
+    indent: &str,
     b_tag_len: usize,
+    tag_order: Option<&(dyn Fn(&str, &str) -> Ordering + Send + Sync)>,
 ) -> (String, usize) {
-    debug_assert!(header_name.eq_ignore_ascii_case(DKIM_SIGNATURE_NAME));
+    // First, find out which tags will be included in which order in the
+    // generated header.
+    let tag_names = compute_tag_names(sig, tag_order);
+    let last_index = tag_names.len().checked_sub(1).unwrap();
 
-    let start_i = header_name.len() + 1;  // plus ":"
+    // The starting point of cursor `i` is just past header name + ':'.
+    // The insertion index will be used when inserting the signature value.
+    let mut output = String::new();
+    let mut i = header_name.len() + 1;
+    let mut insertion_i: Option<usize> = None;
 
-    let mut result = String::new();
-    let mut i = start_i;
+    let out = &mut output;
+    let i = &mut i;
 
-    format_tag_into_string(&mut result, width, &mut i, "v", "1");
+    // Now, format the tags into the output. Given the invariants ensured by the
+    // first step, `unwrap` is used deliberately.
+    for (index, tag_name) in tag_names.into_iter().enumerate() {
+        let last = index == last_index;
 
-    // For the U-label form conversion, see RFC 8616.
-    let domain = sig.domain.to_unicode();
-    format_tag_into_string(&mut result, width, &mut i, "d", &domain);
+        let fmt = Fmt { width, indent, last };
 
-    let selector = sig.selector.to_unicode();
-    format_tag_into_string(&mut result, width, &mut i, "s", &selector);
+        match tag_name {
+            "a" => format_tag_a(out, i, fmt, sig.algorithm),
+            "b" => format_tag_name_b(out, i, fmt, b_tag_len, &mut insertion_i),
+            "bh" => format_tag_bh(out, i, fmt, &sig.body_hash),
+            "c" => format_tag_c(out, i, fmt, sig.canonicalization),
+            "d" => format_tag_d(out, i, fmt, &sig.domain),
+            "h" => format_tag_h(out, i, fmt, &sig.signed_headers),
+            "i" => format_tag_i(out, i, fmt, sig.identity.as_ref().unwrap()),
+            "l" => format_tag_l(out, i, fmt, sig.body_length.unwrap()),
+            "s" => format_tag_s(out, i, fmt, &sig.selector),
+            "t" => format_tag_t(out, i, fmt, sig.timestamp.unwrap()),
+            "v" => format_tag_v(out, i, fmt),
+            "x" => format_tag_x(out, i, fmt, sig.expiration.unwrap()),
+            "z" => format_tag_z(out, i, fmt, &sig.copied_headers),
+            tag_name => {
+                let (t, v) = sig
+                    .extra_tags
+                    .iter()
+                    .find(|(t, _)| t.as_ref() == tag_name)
+                    .unwrap();
 
-    if let Some(Identity { local_part, domain_part }) = &sig.identity {
-        let d = domain_part.to_unicode();
-
-        // in i= value substitute =3B for ; and =20 for space
-        // (both of which are allowed to appear in the identity's local-part!)
-        // TODO revisit, inefficient
-        let l = match local_part {
-            Some(x) => Some(x.replace(';', "=3B").replace(' ', "=20")),
-            None => None,
-        };
-        let l = l.as_deref().unwrap_or("");
-
-        let identity = format!("{l}@{d}");
-        format_tag_into_string(&mut result, width, &mut i, "i", &identity);
+                // A tag value is allowed to contain FWS. In those cases, make
+                // no effort to introduce any line breaks. The result will not
+                // be pretty, but still well-formed.
+                format_tag(out, i, fmt, t, v);
+            }
+        }
     }
 
-    format_tag_into_string(&mut result, width, &mut i, "a", sig.algorithm.canonical_str());
+    (output, insertion_i.unwrap())
+}
 
-    let canon = match (sig.canonicalization.header, sig.canonicalization.body) {
-        (CanonicalizationAlgorithm::Simple, CanonicalizationAlgorithm::Simple) => None,
-        (CanonicalizationAlgorithm::Simple, CanonicalizationAlgorithm::Relaxed) => {
-            Some("simple/relaxed")
-        }
-        (CanonicalizationAlgorithm::Relaxed, CanonicalizationAlgorithm::Simple) => {
-            Some("relaxed")
-        }
-        (CanonicalizationAlgorithm::Relaxed, CanonicalizationAlgorithm::Relaxed) => {
-            Some("relaxed/relaxed")
-        }
+// Note: Our well-formed *DKIM-Signature* output is UTF-8 only. It *may* contain
+// non-ASCII Unicode characters (in the *d=*, *s=*, *i=* [and *z=*] tags); see
+// RFC 8616.
+
+// Note: Throughout, `out` is the final formatted output. `i` is the ‘cursor’ in
+// the current line, based on *characters*, not bytes!
+
+fn format_tag_v(out: &mut String, i: &mut usize, fmt: Fmt<'_>) {
+    format_tag(out, i, fmt, "v", "1");
+}
+
+fn format_tag_d(out: &mut String, i: &mut usize, fmt: Fmt<'_>, domain: &DomainName) {
+    format_tag(out, i, fmt, "d", &domain.to_unicode());
+}
+
+fn format_tag_s(out: &mut String, i: &mut usize, fmt: Fmt<'_>, selector: &Selector) {
+    format_tag(out, i, fmt, "s", &selector.to_unicode());
+}
+
+fn format_tag_i(out: &mut String, i: &mut usize, fmt: Fmt<'_>, identity: &Identity) {
+    let Identity { local_part, domain_part } = identity;
+    let d = domain_part.to_unicode();
+
+    // TODO or qp-encode entire identity string (incl domain)?
+    let identity = match local_part {
+        Some(x) => format!("{}@{d}", quoted_printable::encode(x.as_bytes(), false)),
+        None => format!("@{d}"),
     };
-    if let Some(canon) = canon {
-        format_tag_into_string(&mut result, width, &mut i, "c", canon);
-    }
 
-    if let Some(body_length) = &sig.body_length {
-        format_tag_into_string(&mut result, width, &mut i, "l", &body_length.to_string());
-    }
-
-    if let Some(timestamp) = &sig.timestamp {
-        format_tag_into_string(&mut result, width, &mut i, "t", &timestamp.to_string());
-    }
-    if let Some(expiration) = &sig.expiration {
-        format_tag_into_string(&mut result, width, &mut i, "x", &expiration.to_string());
-    }
-
-    format_signed_headers_into_string(&mut result, width, &mut i, &sig.signed_headers);
-
-    let bh = util::encode_binary(&sig.body_hash);
-    format_body_hash_into_string(&mut result, width, &mut i, &bh);
-
-    if i + 4 <= width {  // at least one additional char behind =
-        result.push_str(" b=");
-        i += 3;
-    } else {
-        result.push_str("\r\n\tb=");
-        i = 3;
-    }
-
-    let insertion_i = result.len();
-
-    if let Some(z) = &sig.copied_headers {
-        // where in the line we are now given the estimated b= tag value length?
-        let chunk_len = width.saturating_sub(1).max(1);
-        let remaining_len = width.saturating_sub(i);
-        if b_tag_len <= remaining_len {
-            i += b_tag_len + 1;  // ;
-        } else {
-            i = (b_tag_len - remaining_len) % chunk_len + 2;  // WSP + ;
-        }
-
-        // push terminating ; for b= value
-        result.push(';');
-
-        // format
-        format_copied_headers_into_string(&mut result, width, &mut i, z);
-    }
-
-    (result, insertion_i)
+    format_tag(out, i, fmt, "i", &identity);
 }
 
-fn format_tag_into_string(
-    result: &mut String,
-    width: usize,
-    i: &mut usize,
-    tag: &'static str,
-    value: &str,
-) {
-    debug_assert!(tag.is_ascii());
-
-    // WSP + tag + '=' + val + ';'
-    let taglen = tag.len() + value.chars().count() + 3;
-
-    if *i + taglen <= width {
-        result.push(' ');
-        *i += taglen;
-    } else {
-        result.push_str("\r\n\t");
-        *i = taglen;
-    }
-
-    write!(result, "{tag}={value};").unwrap();
+fn format_tag_a(out: &mut String, i: &mut usize, fmt: Fmt<'_>, algorithm: SignatureAlgorithm) {
+    format_tag(out, i, fmt, "a", algorithm.canonical_str());
 }
 
-fn format_signed_headers_into_string(
-    result: &mut String,
-    width: usize,
-    i: &mut usize,
-    value: &[FieldName],
-) {
+fn format_tag_c(out: &mut String, i: &mut usize, fmt: Fmt<'_>, canonicalization: Canonicalization) {
+    use CanonicalizationAlgorithm::*;
+
+    let canon = match (canonicalization.header, canonicalization.body) {
+        (Simple, Simple) => return,
+        (Simple, Relaxed) => "simple/relaxed",
+        (Relaxed, Simple) => "relaxed",
+        (Relaxed, Relaxed) => "relaxed/relaxed",
+    };
+
+    format_tag(out, i, fmt, "c", canon);
+}
+
+fn format_tag_l(out: &mut String, i: &mut usize, fmt: Fmt<'_>, body_length: u64) {
+    format_tag(out, i, fmt, "l", &body_length.to_string());
+}
+
+fn format_tag_t(out: &mut String, i: &mut usize, fmt: Fmt<'_>, timestamp: u64) {
+    format_tag(out, i, fmt, "t", &timestamp.to_string());
+}
+
+fn format_tag_x(out: &mut String, i: &mut usize, fmt: Fmt<'_>, expiration: u64) {
+    format_tag(out, i, fmt, "x", &expiration.to_string());
+}
+
+fn format_tag(out: &mut String, i: &mut usize, fmt: Fmt<'_>, name: &str, value: &str) {
+    debug_assert!(name.is_ascii());
+
+    let Fmt { last, .. } = fmt;
+
+    // name + '=' + val [+ ';']
+    let taglen = name.len() + value.chars().count() + if last { 1 } else { 2 };
+
+    advance_i_initial(out, i, taglen, fmt);
+    write!(out, "{name}={value}").unwrap();
+
+    if !last {
+        out.push(';');
+    }
+}
+
+fn format_tag_h(out: &mut String, i: &mut usize, fmt: Fmt<'_>, value: &[FieldName]) {
     debug_assert!(!value.is_empty());
 
-    let mut names = value.iter();
+    let Fmt { last, .. } = fmt;
+
+    let mut names = value.iter().map(|f| f.as_ref()).peekable();
 
     let first_name = names.next().unwrap();
-    let first_name = first_name.as_ref();
 
-    // WSP + 'h=' + name + ';'/':'
-    let taglen = first_name.chars().count() + 4;
-    if *i + taglen <= width {
-        result.push(' ');
-        *i += taglen;
-    } else {
-        result.push_str("\r\n\t");
-        *i = taglen;
-    }
-    write!(result, "h={first_name}").unwrap();  // don't write ;/: yet
+    // "h=" + name [+ ';'/':']
+    let taglen = first_name.chars().count() + if names.peek().is_none() && last { 2 } else { 3 };
 
-    for name in names {
-        let name = name.as_ref();
+    advance_i_initial(out, i, taglen, fmt);
+    write!(out, "h={first_name}").unwrap();
+    // now still need to write ;/: to match current i, this is done right away in the next stmt below
 
-        result.push(':');
+    while let Some(name) = names.next() {
+        out.push(':');
 
-        let len = name.chars().count() + 1;  // name + ';'/':'
-        if *i + len <= width {
-            *i += len;
-        } else {
-            result.push_str("\r\n\t");
-            *i = len + 1;
-        }
-        write!(result, "{name}").unwrap();  // don't write ;/: yet
+        // name [+ ';'/':']
+        let len = name.chars().count() + if names.peek().is_none() && last { 0 } else { 1 };
+
+        advance_i(out, i, len, fmt);
+        write!(out, "{name}").unwrap();
+        // again, still need to write ;/:, it is done right away
     }
 
-    result.push(';');
+    if !last {
+        out.push(';');
+    }
 }
 
-fn format_body_hash_into_string(result: &mut String, width: usize, i: &mut usize, value: &str) {
-    // WSP + 'bh=' + 1char (at least one additional char behind =)
-    let taglen = 5;
+fn format_tag_bh(out: &mut String, i: &mut usize, fmt: Fmt<'_>, value: &[u8]) {
+    let Fmt { last, .. } = fmt;
 
-    if *i + taglen <= width {
-        result.push(' ');
-        *i += taglen - 1;
-    } else {
-        result.push_str("\r\n\t");
-        *i = taglen - 1;
+    let value = util::encode_binary(value);
+
+    // "bh=" + 1 char (we prefer at least one additional char behind =)
+    let taglen = 4;
+
+    advance_i_initial(out, i, taglen, fmt);
+    *i -= 1;  // backwards again before the ghost character
+    out.push_str("bh=");
+
+    format_chunks_into_string(out, i, fmt, &value);
+
+    // if final chunk makes line *width* chars long, the final ; will be
+    // appended nevertheless (giving a width of *width + 1*; this is fine)
+    if !last {
+        out.push(';');
+        *i += 1;
     }
-    result.push_str("bh=");
-
-    format_chunks_into_string(result, width, i, value);
-
-    // if final chunk makes line 78 chars long, the final ; will be appended nevertheless (=> width == 79)
-    result.push(';');
-    *i += 1;
 }
 
-fn format_copied_headers_into_string(
-    result: &mut String,
-    width: usize,
+fn format_tag_name_b(
+    out: &mut String,
     i: &mut usize,
-    value: &[(FieldName, Box<[u8]>)],
+    fmt: Fmt<'_>,
+    b_tag_len: usize,
+    insertion_i: &mut Option<usize>,
 ) {
+    let Fmt { width, indent, last } = fmt;
+
+    // "b=" + 1 char (we prefer at least one additional char behind =)
+    let taglen = 3;
+    advance_i_initial(out, i, taglen, fmt);
+    *i -= 1;  // backwards again before the ghost character
+    out.push_str("b=");
+
+    *insertion_i = Some(out.len());
+
+    // where in the line are we now given the estimated b= tag value length?
+    let chunk_len = width.saturating_sub(indent.len()).max(1);
+    let remaining_len = width.saturating_sub(*i);
+    if b_tag_len <= remaining_len {
+        *i += b_tag_len;
+    } else {
+        *i = (b_tag_len - remaining_len) % chunk_len + indent.len();
+    }
+
+    if !last {
+        out.push(';');
+        *i += 1;
+    }
+}
+
+fn format_tag_z(out: &mut String, i: &mut usize, fmt: Fmt<'_>, value: &[(FieldName, Box<[u8]>)]) {
     debug_assert!(!value.is_empty());
 
-    let mut iter = value.iter();
+    let Fmt { width, indent, last } = fmt;
 
-    // ensure that z= plus the first header name (including :) fit on the first line
+    let mut iter = value.iter().map(|(f, v)| (f.as_ref(), v)).peekable();
+
+    // ensure that z= plus the first header name (including ':') fit on the first line
 
     let (first_name, val) = iter.next().unwrap();
-    let first_name = first_name.as_ref();
 
-    // WSP + "z=" + name + ':'
-    let taglen = first_name.chars().count() + 4;
+    // "z=" + name + ':'
+    let taglen = first_name.chars().count() + 3;
 
-    if *i + taglen <= width {
-        result.push(' ');
-        *i += taglen;
-    } else {
-        result.push_str("\r\n\t");
-        *i = taglen;
-    }
-    write!(result, "z={first_name}:").unwrap();
+    advance_i_initial(out, i, taglen, fmt);
+    write!(out, "z={first_name}:").unwrap();
 
-    let val = quoted_printable::dqp_encode(val, true);
-
-    format_chunks_into_string(result, width, i, &val);
+    let val = quoted_printable::encode(val, true);
+    format_chunks_into_string(out, i, fmt, &val);
 
     for (name, val) in iter {
-        let name = name.as_ref();
         if *i >= width {
-            result.push_str("\r\n\t");
-            *i = 1;
+            write!(out, "\r\n{indent}").unwrap();
+            *i = indent.len();
         }
-        result.push('|');
+        out.push('|');
         *i += 1;
 
         let namelen = name.chars().count() + 1;
         if *i + namelen <= width {
-            result.push_str(name);
-            result.push(':');
+            write!(out, "{name}:").unwrap();
             *i += namelen;
         } else {
-            result.push_str("\r\n\t");
-            result.push_str(name);
-            result.push(':');
-            *i = namelen + 1;
+            write!(out, "\r\n{indent}{name}:").unwrap();
+            *i = indent.len() + namelen;
         }
 
-        let val = quoted_printable::dqp_encode(val, true);
-
-        format_chunks_into_string(result, width, i, &val);
+        let val = quoted_printable::encode(val, true);
+        format_chunks_into_string(out, i, fmt, &val);
     }
 
-    // no ; necessary
+    if !last {
+        out.push(';');
+        *i += 1;
+    }
 }
 
-// note always:
-// i: *char-based* line offset
-// width: *char-based* line width
-pub fn format_chunks_into_string(output: &mut String, width: usize, i: &mut usize, mut s: &str) {
+/// Advances the cursor `i`, making space for an item of length `len`, inserting
+/// line break and indentation if necessary.
+fn advance_i(out: &mut String, i: &mut usize, len: usize, fmt: Fmt<'_>) {
+    let Fmt { width, indent, .. } = fmt;
+
+    if *i + len <= width {
+        *i += len;
+    } else {
+        write!(out, "\r\n{indent}").unwrap();
+        *i = indent.len() + len;
+    }
+}
+
+fn advance_i_initial(out: &mut String, i: &mut usize, len: usize, fmt: Fmt<'_>) {
+    let Fmt { width, indent, .. } = fmt;
+
+    // + 1 for initial SP
+    if *i + len + 1 <= width {
+        out.push(' ');
+        *i += len + 1;
+    } else {
+        write!(out, "\r\n{indent}").unwrap();
+        *i = indent.len() + len;
+    }
+}
+
+fn format_chunks_into_string(out: &mut String, i: &mut usize, fmt: Fmt<'_>, mut s: &str) {
+    let Fmt { width, indent, .. } = fmt;
+
     let first_chunk_len = width.saturating_sub(*i);
     let first_chunk_len = first_chunk_len.min(s.chars().count());
 
@@ -322,12 +431,12 @@ pub fn format_chunks_into_string(output: &mut String, width: usize, i: &mut usiz
         };
         let first_chunk;
         (first_chunk, s) = s.split_at(c);
-        output.push_str(first_chunk);
+        out.push_str(first_chunk);
         *i += first_chunk.chars().count();
     }
 
-    let chunk_width = width.saturating_sub(1).max(1);  // no empty chunks
-    let chunk_iter = iter::from_fn(|| {
+    let chunk_width = width.saturating_sub(indent.len()).max(1);  // no empty chunks
+    let chunks = iter::from_fn(|| {
         if s.is_empty() {
             None
         } else {
@@ -345,33 +454,58 @@ pub fn format_chunks_into_string(output: &mut String, width: usize, i: &mut usiz
         }
     });
 
-    for chunk in chunk_iter {
-        output.push_str("\r\n\t");
-        output.push_str(chunk);
-        *i = chunk.chars().count() + 1;
+    for chunk in chunks {
+        write!(out, "\r\n{indent}{chunk}").unwrap();
+        *i = chunk.chars().count() + indent.len();
     }
 }
 
 pub fn insert_signature_data(
     formatted_header: &mut String,
     insertion_index: usize,
+    header_name: &str,
     signature_data: &[u8],
     line_width: usize,
+    indent: &str,
 ) {
     debug_assert!(insertion_index <= formatted_header.len());
+
+    // TODO revisit Fmt struct
+    let fmt = Fmt { width: line_width, indent, last: false /*notused*/};
 
     let s = util::encode_binary(signature_data);
     // note s contains only ASCII now
 
     let formatted_header_pre = &formatted_header[..insertion_index];
 
-    let mut len = match formatted_header_pre.rsplit("\r\n").next() {
-        Some(last_line) => last_line.chars().count(),
-        None => DKIM_SIGNATURE_NAME.len() + formatted_header_pre.chars().count() + 1,
+    let mut it = formatted_header_pre.rsplit("\r\n");
+    let last_line = it.next().unwrap();
+    let mut len = if it.next().is_some() {
+        last_line.chars().count()
+    } else {
+        header_name.len() + last_line.chars().count() + 1
     };
 
     let mut result = String::with_capacity(s.len());
-    format_chunks_into_string(&mut result, line_width, &mut len, &s);
+    format_chunks_into_string(&mut result, &mut len, fmt, &s);
 
     formatted_header.insert_str(insertion_index, &result);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_tag_h_ok() {
+        let mut out = String::new();
+        let mut i = 0;
+        let fmt = Fmt { width: 10, indent: "  ", last: false };
+        let value = [FieldName::new("Ribbit").unwrap()];
+
+        format_tag_h(&mut out, &mut i, fmt, &value);
+
+        assert_eq!(out, " h=Ribbit;");
+        assert_eq!(i, 10);
+    }
 }

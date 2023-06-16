@@ -2,8 +2,8 @@ use crate::{
     crypto::{self, HashAlgorithm, VerifyingKey},
     header::HeaderFields,
     message_hash,
-    parse::strip_fws,
     signature::DkimSignature,
+    tag_list,
     verifier::VerifierError,
 };
 use std::{borrow::Cow, str};
@@ -34,11 +34,8 @@ pub fn perform_verification(
 }
 
 fn make_original_dkim_sig(value: &str) -> Cow<'_, str> {
-    // TODO reuse functions from crate::tag_list
     fn b_tag_prefix_len(s: &str) -> Option<usize> {
-        let rest = strip_fws(s).unwrap_or(s).strip_prefix('b')?;
-        let rest = strip_fws(rest).unwrap_or(rest);
-        let rest = rest.strip_prefix('=')?;
+        let (rest, _) = tag_list::strip_tag_name_and_equals(s).filter(|(_, name)| *name == "b")?;
         Some(s.len() - rest.len())
     }
 

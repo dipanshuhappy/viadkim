@@ -1,96 +1,12 @@
+//! Tag=value lists. See RFC 6376, section 3.2.
+
 use crate::{
     header::FieldName,
-    parse::{strip_fws, strip_suffix},
+    parse::{rstrip_fws, strip_fws, strip_suffix},
     quoted_printable,
 };
 use base64ct::{Base64, Encoding};
 use std::{collections::HashSet, str};
-
-// TODO revisit module, names, errors
-
-pub fn parse_colon_separated_tag_value(value: &str) -> Vec<&str> {
-    // assume input is a valid tag-list value
-    debug_assert!(is_tag_value(value));
-
-    value
-        .split(':')
-        .map(|s| s.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n')))
-        .collect()
-}
-
-pub fn parse_qp_section_tag_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
-    debug_assert!(is_tag_value(value));
-    // TODO also: no FWS allowed in qp-section
-
-    match quoted_printable::parse_qp_section(value) {
-        Some(v) => Ok(v),
-        None => Err(TagListParseError::Syntax),
-    }
-}
-
-pub fn parse_base64_tag_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
-    debug_assert!(is_tag_value(value));
-
-    let value = strip_fws_from_tag_value(value);
-    Base64::decode_vec(&value).map_err(|_| TagListParseError::Syntax)
-}
-
-pub fn parse_dqp_tag_value(value: &str) -> Result<String, TagListParseError> {
-    debug_assert!(is_tag_value(value));
-
-    let value = strip_fws_from_tag_value(value);
-
-    let val = quoted_printable::dqp_decode(&value).map_err(|_| TagListParseError::Syntax)?;
-
-    String::from_utf8(val).map_err(|_| TagListParseError::Syntax)
-}
-
-pub fn parse_dqp_header_field(value: &str) -> Result<(FieldName, Box<[u8]>), TagListParseError> {
-    // note: unlike other functions here, value may be surrounded with FWS
-    debug_assert!({
-        let v = strip_fws(value).unwrap_or(value);
-        v.is_empty()
-            || matches!(parse_tag_value(v), Some((rest, _)) if strip_fws(rest).unwrap_or(rest).is_empty())
-    });
-
-    // This enforces well-formedness requirement for header field names, but not
-    // for the dqp-encoded value, which can be anything.
-
-    let value = strip_fws_from_tag_value(value);
-
-    let val = quoted_printable::dqp_decode(&value).map_err(|_| TagListParseError::Syntax)?;
-
-    let mut iter = val.splitn(2, |&c| c == b':');
-
-    match (iter.next(), iter.next()) {
-        (Some(name), Some(value)) => {
-            let name = str::from_utf8(name).map_err(|_| TagListParseError::Syntax)?;
-            let name = FieldName::new(name).map_err(|_| TagListParseError::Syntax)?;
-            let value = value.into();
-            Ok((name, value))
-        }
-        _ => Err(TagListParseError::Syntax),
-    }
-}
-
-fn is_tag_value(s: &str) -> bool {
-    s.is_empty() || matches!(parse_tag_value(s), Some((rest, _)) if rest.is_empty())
-}
-
-// TODO this is not good public API, revisit
-pub fn strip_fws_from_tag_value(value: &str) -> String {
-    // assume only well-formed FWS
-    value
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
-        .collect()
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct TagSpec<'a> {
-    pub name: &'a str,
-    pub value: &'a str,
-}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TagListParseError {
@@ -98,6 +14,13 @@ pub enum TagListParseError {
     Syntax,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TagSpec<'a> {
+    pub name: &'a str,
+    pub value: &'a str,
+}
+
+/// A list of well-formed tag=value pairs with unique tag names.
 #[derive(Debug, PartialEq, Eq)]
 pub struct TagList<'a>(Vec<TagSpec<'a>>);
 
@@ -108,27 +31,26 @@ impl<'a> AsRef<[TagSpec<'a>]> for TagList<'a> {
 }
 
 impl<'a> TagList<'a> {
-    pub fn from_str(val: &'a str) -> Result<Self, TagListParseError> {
-        match parse_tag_list_internal(val) {
+    pub fn from_str(s: &'a str) -> Result<Self, TagListParseError> {
+        match strip_tag_list(s) {
             Some((rest, tag_list)) if rest.is_empty() => {
-                // ensure no duplicate names
                 let mut names_seen = HashSet::new();
                 if tag_list.iter().any(|tag| !names_seen.insert(tag.name)) {
                     return Err(TagListParseError::DuplicateTag);
                 }
-                Ok(TagList(tag_list))
+                Ok(Self(tag_list))
             }
             _ => Err(TagListParseError::Syntax),
         }
     }
 }
 
-pub fn parse_tag_list_internal(val: &str) -> Option<(&str, Vec<TagSpec<'_>>)> {
-    let (mut s, t) = parse_tag_spec(val)?;
+fn strip_tag_list(val: &str) -> Option<(&str, Vec<TagSpec<'_>>)> {
+    let (mut s, t) = strip_tag_spec(val)?;
 
     let mut tags = vec![t];
 
-    while let Some((snext, t)) = s.strip_prefix(';').and_then(parse_tag_spec) {
+    while let Some((snext, t)) = s.strip_prefix(';').and_then(strip_tag_spec) {
         s = snext;
         tags.push(t);
     }
@@ -138,18 +60,12 @@ pub fn parse_tag_list_internal(val: &str) -> Option<(&str, Vec<TagSpec<'_>>)> {
     Some((s, tags))
 }
 
-fn parse_tag_spec(val: &str) -> Option<(&str, TagSpec<'_>)> {
-    let s = strip_fws(val).unwrap_or(val);
-
-    let (s, name) = parse_tag_name(s)?;
+fn strip_tag_spec(val: &str) -> Option<(&str, TagSpec<'_>)> {
+    let (s, name) = strip_tag_name_and_equals(val)?;
 
     let s = strip_fws(s).unwrap_or(s);
 
-    let s = s.strip_prefix('=')?;
-
-    let s = strip_fws(s).unwrap_or(s);
-
-    let (s, value) = match parse_tag_value(s) {
+    let (s, value) = match strip_tag_value(s) {
         Some((s, value)) => {
             let s = strip_fws(s).unwrap_or(s);
             (s, value)
@@ -160,7 +76,20 @@ fn parse_tag_spec(val: &str) -> Option<(&str, TagSpec<'_>)> {
     Some((s, TagSpec { name, value }))
 }
 
-fn parse_tag_name(value: &str) -> Option<(&str, &str)> {
+/// Strips a tag name including the equals sign, ie everything before a value.
+pub fn strip_tag_name_and_equals(val: &str) -> Option<(&str, &str)> {
+    let s = strip_fws(val).unwrap_or(val);
+
+    let (s, name) = strip_tag_name(s)?;
+
+    let s = strip_fws(s).unwrap_or(s);
+
+    let s = s.strip_prefix('=')?;
+
+    Some((s, name))
+}
+
+fn strip_tag_name(value: &str) -> Option<(&str, &str)> {
     let s = value
         .strip_prefix(is_alpha)?
         .trim_start_matches(is_alphanum);
@@ -168,7 +97,7 @@ fn parse_tag_name(value: &str) -> Option<(&str, &str)> {
 }
 
 // Note erratum 5070 in ABNF
-fn parse_tag_value(value: &str) -> Option<(&str, &str)> {
+fn strip_tag_value(value: &str) -> Option<(&str, &str)> {
     fn strip_tval(s: &str) -> Option<&str> {
         s.strip_prefix(is_tval_char)
             .map(|s| s.trim_start_matches(is_tval_char))
@@ -192,22 +121,88 @@ fn is_alphanum(c: char) -> bool {
 }
 
 pub fn is_tval_char(c: char) -> bool {
-    // printable ASCII w/o ; or non-ASCII UTF-8
+    // printable ASCII without ; plus any non-ASCII UTF-8
     matches!(c, '!'..=':' | '<'..='~') || !c.is_ascii()
+}
+
+pub fn parse_colon_separated_value(value: &str) -> Vec<&str> {
+    debug_assert!(is_tag_value(value));
+
+    value.split(':').map(trim_surrounding_fws).collect()
+}
+
+pub fn parse_base64_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
+    debug_assert!(is_tag_value(value));
+
+    let value = strip_fws_from_tag_value(value);
+
+    Base64::decode_vec(&value).map_err(|_| TagListParseError::Syntax)
+}
+
+pub fn parse_qp_section_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
+    debug_assert!(is_tag_value(value));
+
+    quoted_printable::decode_qp_section(value).map_err(|_| TagListParseError::Syntax)
+}
+
+pub fn parse_quoted_printable_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
+    debug_assert!(is_tag_value(value));
+
+    quoted_printable::decode(value).map_err(|_| TagListParseError::Syntax)
+}
+
+pub fn parse_quoted_printable_header_field(
+    value: &str,
+) -> Result<(FieldName, Box<[u8]>), TagListParseError> {
+    // Unlike other functions here, value may be surrounded with FWS.
+    debug_assert!(is_tag_value(trim_surrounding_fws(value)));
+
+    // This enforces well-formedness requirement for header field names, but not
+    // for the qp-encoded value, which can be anything (it should of course
+    // conform to `FieldBody`, but since it is foreign data we cannot assume).
+
+    let val = quoted_printable::decode(value).map_err(|_| TagListParseError::Syntax)?;
+
+    let mut iter = val.splitn(2, |&c| c == b':');
+
+    match (iter.next(), iter.next()) {
+        (Some(name), Some(value)) => {
+            let name = str::from_utf8(name).map_err(|_| TagListParseError::Syntax)?;
+            let name = FieldName::new(name).map_err(|_| TagListParseError::Syntax)?;
+            let value = value.into();
+            Ok((name, value))
+        }
+        _ => Err(TagListParseError::Syntax),
+    }
+}
+
+pub fn is_tag_name(s: &str) -> bool {
+    matches!(strip_tag_name(s), Some((rest, _)) if rest.is_empty())
+}
+
+pub fn is_tag_value(s: &str) -> bool {
+    s.is_empty() || matches!(strip_tag_value(s), Some((rest, _)) if rest.is_empty())
+}
+
+/// Strips folding whitespace from a well-formed tag value.
+pub fn strip_fws_from_tag_value(value: &str) -> String {
+    debug_assert!(is_tag_value(value));
+
+    // A tag value contains only well-formed FWS, so may strip indiscriminately:
+    value
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
+        .collect()
+}
+
+fn trim_surrounding_fws(s: &str) -> &str {
+    let s = strip_fws(s).unwrap_or(s);
+    rstrip_fws(s).unwrap_or(s)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_colon_separated_tag_value_ok() {
-        assert_eq!(
-            parse_colon_separated_tag_value("ab:\r\n\tc\r\n\td:e"),
-            ["ab", "c\r\n\td", "e"]
-        );
-        assert_eq!(parse_colon_separated_tag_value(""), [""]);
-    }
 
     #[test]
     fn tag_list_from_str_ok() {
@@ -222,15 +217,25 @@ mod tests {
   b=dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZVoG4ZHRNiYzR";
         let example = example.replace('\n', "\r\n");
 
-        let q = TagList::from_str(&example).unwrap();
-        assert!(!q.as_ref().is_empty());
+        let tag_list = TagList::from_str(&example).unwrap();
+
+        assert!(!tag_list.as_ref().is_empty());
     }
 
     #[test]
-    fn parse_dqp_header_field_ok() {
+    fn parse_colon_separated_value_ok() {
+        assert_eq!(
+            parse_colon_separated_value("ab:\r\n\tc\r\n\td\r\n\t:e"),
+            ["ab", "c\r\n\td", "e"]
+        );
+        assert_eq!(parse_colon_separated_value(""), [""]);
+    }
+
+    #[test]
+    fn parse_quoted_printable_header_field_ok() {
         let example = " Date:=20July=205,=0D=0A=092005=20\r\n\t3:44:08=20PM=20-0700 ";
 
-        let result = parse_dqp_header_field(example);
+        let result = parse_quoted_printable_header_field(example);
 
         assert_eq!(
             result,

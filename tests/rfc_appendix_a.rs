@@ -1,65 +1,21 @@
-use std::{
-    collections::HashSet,
-    future::Future,
-    io::{self, ErrorKind},
-    pin::Pin,
-};
-use tokio::fs;
+pub mod common;
+
+use common::MockLookup;
+use std::{collections::HashSet, io::ErrorKind};
 use viadkim::{
-    crypto::SigningKey,
+    header::{self, FieldName, HeaderFields},
     signature::{DomainName, Selector, SignatureAlgorithm},
-    signer::{self, HeaderSelection, SignRequest, SigningStatus},
-    verifier::{LookupTxt, VerificationStatus},
-    FieldName, HeaderFields, Signer, Verifier,
+    signer::{self, HeaderSelection, SignRequest},
+    verifier::VerificationStatus,
+    Signer, Verifier,
 };
-
-#[derive(Clone, Copy)]
-enum KeyFormat {
-    RsaPublicKey,
-    SubjectPublicKeyInfo,
-}
-
-#[derive(Clone)]
-struct MockLookup(KeyFormat);
-
-impl LookupTxt for MockLookup {
-    type Answer = Vec<Result<Vec<u8>, io::Error>>;
-    type Query<'a> = Pin<Box<dyn Future<Output = Result<Self::Answer, io::Error>> + Send + 'a>>;
-
-    fn lookup_txt(&self, domain: &str) -> Self::Query<'_> {
-        let name = domain.to_owned();
-
-        Box::pin(async move {
-            match name.as_str() {
-                "brisbane._domainkey.example.com." => {
-                    let s = match self.0 {
-                        KeyFormat::RsaPublicKey => {
-                            fs::read_to_string("tests/brisbane_rsa.pem").await?
-                        }
-                        KeyFormat::SubjectPublicKeyInfo => {
-                            fs::read_to_string("tests/brisbane_spki.pem").await?
-                        }
-                    };
-
-                    let mut key_base64: Vec<_> = s.lines().skip(1).collect();
-                    key_base64.pop();
-
-                    let record = format!("v=DKIM1; k=rsa; p={}", key_base64.join(""));
-
-                    Ok(vec![Ok(record.into())])
-                }
-                _ => Err(ErrorKind::NotFound.into()),
-            }
-        })
-    }
-}
 
 /// Example from RFC 6376, appendix A.2, with public key in RSAPublicKey format.
 #[tokio::test]
 async fn rfc_appendix_a_rsa() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let resolver = MockLookup(KeyFormat::RsaPublicKey);
+    let resolver = make_resolver_rsa();
     let headers = make_header_fields();
     let config = Default::default();
 
@@ -67,7 +23,7 @@ async fn rfc_appendix_a_rsa() {
 
     let body = make_body();
 
-    verifier.body_chunk(&body);
+    let _ = verifier.body_chunk(&body);
 
     let sigs = verifier.finish();
 
@@ -81,7 +37,7 @@ async fn rfc_appendix_a_rsa() {
 async fn rfc_appendix_a_spki() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let resolver = MockLookup(KeyFormat::SubjectPublicKeyInfo);
+    let resolver = make_resolver_spki();
     let headers = make_header_fields();
     let config = Default::default();
 
@@ -89,7 +45,7 @@ async fn rfc_appendix_a_spki() {
 
     let body = make_body();
 
-    verifier.body_chunk(&body);
+    let _ = verifier.body_chunk(&body);
 
     let sigs = verifier.finish();
 
@@ -107,9 +63,7 @@ async fn sign_roundtrip() {
     let headers = make_header_fields();
     let body = make_body();
 
-    let s = fs::read_to_string("tests/brisbane_private.pem").await.unwrap();
-    let signing_key = SigningKey::from_pkcs8_pem(&s).unwrap();
-
+    let signing_key = common::read_signing_key_from_file("tests/keys/brisbane_private.pem").await.unwrap();
     let mut req = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("brisbane").unwrap(),
@@ -131,26 +85,23 @@ async fn sign_roundtrip() {
 
     let mut signer = Signer::prepare_signing([req], headers).unwrap();
 
-    signer.body_chunk(&body);
+    let _ = signer.body_chunk(&body);
 
     let sigs = signer.finish().await;
 
-    let result = sigs.into_iter().next().unwrap();
+    let sign_result = sigs.into_iter().next().unwrap().unwrap();
+    tracing::trace!("{}", sign_result.format_header());
 
-    match result.status {
-        SigningStatus::Success { header_name, header_value, .. } => {
-            tracing::trace!("{}:{}", header_name, header_value);
-        }
-        _ => panic!(),
-    }
-
-    let resolver = MockLookup(KeyFormat::SubjectPublicKeyInfo);
-    let headers = make_header_fields();
+    let resolver = make_resolver_spki();
     let config = Default::default();
+
+    let mut headers: Vec<_> = make_header_fields().into();
+    headers.insert(0, sign_result.to_header_field());
+    let headers = HeaderFields::new(headers).unwrap();
 
     let mut verifier = Verifier::process_header(&resolver, &headers, &config).await.unwrap();
 
-    verifier.body_chunk(&body);
+    let _ = verifier.body_chunk(&body);
 
     let sigs = verifier.finish();
 
@@ -159,57 +110,70 @@ async fn sign_roundtrip() {
     assert_eq!(result.status, VerificationStatus::Success);
 }
 
+fn make_resolver_rsa() -> MockLookup {
+    MockLookup::new(|name| {
+        Box::pin(async move {
+            match name {
+                "brisbane._domainkey.example.com." => {
+                    let base64 =
+                        common::read_public_key_file_base64("tests/keys/brisbane_rsa.pem").await?;
+                    Ok(vec![Ok(format!("v=DKIM1; k=rsa; p={base64}").into())])
+                }
+                _ => Err(ErrorKind::NotFound.into()),
+            }
+        })
+    })
+}
+
+fn make_resolver_spki() -> MockLookup {
+    MockLookup::new(|name| {
+        Box::pin(async move {
+            match name {
+                "brisbane._domainkey.example.com." => {
+                    let base64 =
+                        common::read_public_key_file_base64("tests/keys/brisbane_spki.pem").await?;
+                    Ok(vec![Ok(format!("v=DKIM1; k=rsa; p={base64}").into())])
+                }
+                _ => Err(ErrorKind::NotFound.into()),
+            }
+        })
+    })
+}
+
 // Note RFC 6376, erratum 4926!
 fn make_header_fields() -> HeaderFields {
-    let headers: Vec<(String, Vec<u8>)> = vec![
-        (
-            "DKIM-Signature".into(),
-            b" v=1; a=rsa-sha256; s=brisbane; d=example.com;\r
-      c=simple/simple; q=dns/txt; i=joe@football.example.com;\r
-      h=Received : From : To : Subject : Date : Message-ID;\r
-      bh=2jUSOH9NhtVGCQWNr9BrIAPreKQjO6Sn7XIkfJVOzv8=;\r
-      b=AuUoFEfDxTDkHlLXSZEpZj79LICEps6eda7W3deTVFOk4yAUoqOB\r
-        4nujc7YopdG5dWLSdNg6xNAZpOPr+kHxt1IrE+NahM6L/LbvaHut\r
-        KVdkLLkpVaVVQPzeRDI009SO2Il5Lu7rDNH6mZckBdrIx0orEtZV\r
-        4bmp/YzhwvcubU4=;"
-                .to_vec(),
-        ),
-        (
-            "Received".into(),
-            b" from client1.football.example.com  [192.0.2.1]\r
-      by submitserver.example.com with SUBMISSION;\r
-      Fri, 11 Jul 2003 21:01:54 -0700 (PDT)"
-                .to_vec(),
-        ),
-        (
-            "From".into(),
-            b" Joe SixPack <joe@football.example.com>".to_vec(),
-        ),
-        (
-            "To".into(),
-            b" Suzie Q <suzie@shopping.example.net>".to_vec(),
-        ),
-        ("Subject".into(), b" Is dinner ready?".to_vec()),
-        (
-            "Date".into(),
-            b" Fri, 11 Jul 2003 21:00:37 -0700 (PDT)".to_vec(),
-        ),
-        (
-            "Message-ID".into(),
-            b" <20030712040037.46341.5F8J@football.example.com>".to_vec(),
-        ),
-    ];
-
-    HeaderFields::from_vec(headers).unwrap()
+    header::parse_header(
+        "\
+DKIM-Signature: v=1; a=rsa-sha256; s=brisbane; d=example.com;
+      c=simple/simple; q=dns/txt; i=joe@football.example.com;
+      h=Received : From : To : Subject : Date : Message-ID;
+      bh=2jUSOH9NhtVGCQWNr9BrIAPreKQjO6Sn7XIkfJVOzv8=;
+      b=AuUoFEfDxTDkHlLXSZEpZj79LICEps6eda7W3deTVFOk4yAUoqOB
+        4nujc7YopdG5dWLSdNg6xNAZpOPr+kHxt1IrE+NahM6L/LbvaHut
+        KVdkLLkpVaVVQPzeRDI009SO2Il5Lu7rDNH6mZckBdrIx0orEtZV
+        4bmp/YzhwvcubU4=;
+Received: from client1.football.example.com  [192.0.2.1]
+      by submitserver.example.com with SUBMISSION;
+      Fri, 11 Jul 2003 21:01:54 -0700 (PDT)
+From: Joe SixPack <joe@football.example.com>
+To: Suzie Q <suzie@shopping.example.net>
+Subject: Is dinner ready?
+Date: Fri, 11 Jul 2003 21:00:37 -0700 (PDT)
+Message-ID: <20030712040037.46341.5F8J@football.example.com>
+",
+    )
+    .unwrap()
 }
 
 // Note RFC 6376, erratum 3192!
 fn make_body() -> Vec<u8> {
-    b"Hi.\r
-\r
-We lost the game. Are you hungry yet?\r
-\r
-Joe.\r
+    "Hi.
+
+We lost the game. Are you hungry yet?
+
+Joe.
 "
-    .to_vec()
+    .replace('\n', "\r\n")
+    .bytes()
+    .collect()
 }

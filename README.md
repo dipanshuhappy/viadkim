@@ -2,7 +2,7 @@
 
 ### 🚧
 
-### *experimental, in development*
+### *in development*
 
 ### 🏗
 
@@ -23,8 +23,6 @@ used to guide development.
 
 ## Design objectives
 
-TODO
-
 The goal of viadkim is to provide a free DKIM library suitable for long-lived
 mail server processes, with strong RFC conformance guarantees.
 
@@ -34,17 +32,21 @@ concurrently; bypass or shortcut message body processing where this is possible,
 and without the whole message being in memory at once; or sharing message body
 canonicalisation results among signature evaluation tasks.
 
-Of equal importance is a certain **resilience** and broad **compatibility in
-handling inputs**. Notably, internationalised email is fully supported in
-viadkim. But also malformed inputs that do occur in practice, such as stray
-Latin 1 bytes in headers are handled transparently. Generally, all inputs are
-handled gracefully, and similarly all outputs should be well-formed.
+Of equal importance is **resilience and compatibility in handling inputs**.
+Notably, internationalised email is fully supported in viadkim. But also
+malformed inputs that do occur in practice, such as stray Latin 1 bytes in
+headers are handled transparently. Generally, all inputs are handled gracefully,
+and similarly all outputs should be well-formed.
 
-Care is taken to **conform** strictly to **RFC 6376**, including RFC updates and
-known errata. Internationalised email was already mentioned. Also, for example,
-for both signing and verifying only the signature algorithms `rsa-sha256` and
-`ed25519-sha256` are supported, the historic signature algorithm `rsa-sha1` was
-retired and is not supported (unless explicitly enabled; see [RFC 8301]).
+Furthermore, extensive **configuration options**, for both the signing and
+verification process, as well as ample evaluation outputs, should enable a wide
+range of DKIM usage patterns and preferences.
+
+Finally, care is taken to strictly **conform to RFC 6376**, including RFC
+updates and known errata. Support for internationalised email was already
+mentioned, but also, for example, more recent recommendations for supported
+signature algorithms such as addition of *ed25519-sha256* and retirement of
+*rsa-sha1* are adopted (see [RFC 8301]).
 
 [RFC 6376]: https://www.rfc-editor.org/rfc/rfc6376
 [RFC 8301]: https://www.rfc-editor.org/rfc/rfc8301
@@ -61,6 +63,9 @@ DNS resolution is abstracted in trait `LookupTxt`.
 
 A lookup implementation of the `LookupTxt` trait can be made available for the
 Trust-DNS async resolver by enabling feature `trust-dns-resolver`.
+
+The optional feature `sha1` enables support for the insecure, historic SHA-1
+algorithm in the API. Use of this feature is strongly discouraged.
 
 ## Examples
 

@@ -2,10 +2,7 @@
 
 use crate::{
     crypto::{HashAlgorithm, KeyType},
-    tag_list::{
-        parse_base64_tag_value, parse_colon_separated_tag_value, parse_qp_section_tag_value,
-        TagList, TagSpec,
-    },
+    tag_list::{self, TagList, TagSpec},
 };
 use std::{
     fmt::{self, Display, Formatter},
@@ -94,7 +91,7 @@ impl DkimKeyRecord {
                 "h" => {
                     hash_algorithms.clear();
 
-                    for s in parse_colon_separated_tag_value(value) {
+                    for s in tag_list::parse_colon_separated_value(value) {
                         if s.eq_ignore_ascii_case("sha256") {
                             hash_algorithms.push(HashAlgorithm::Sha256);
                         } else {
@@ -117,7 +114,7 @@ impl DkimKeyRecord {
                     }
                 }
                 "n" => {
-                    let s = parse_qp_section_tag_value(value)
+                    let s = tag_list::parse_qp_section_value(value)
                         .map_err(|_| DkimKeyRecordParseError::InvalidQuotedPrintable)?;
 
                     // §3.6.1: ‘Notes that might be of interest to a human’. It
@@ -131,7 +128,7 @@ impl DkimKeyRecord {
                         return Err(DkimKeyRecordParseError::RevokedKey);
                     }
 
-                    let s = parse_base64_tag_value(value)
+                    let s = tag_list::parse_base64_value(value)
                         .map_err(|_| DkimKeyRecordParseError::InvalidBase64)?;
 
                     key_data = Some(s.into());
@@ -139,7 +136,7 @@ impl DkimKeyRecord {
                 "s" => {
                     let mut st = vec![];
 
-                    for s in parse_colon_separated_tag_value(value) {
+                    for s in tag_list::parse_colon_separated_value(value) {
                         if s == "*" {
                             st.push(ServiceType::Any);
                         } else if s.eq_ignore_ascii_case("email") {
@@ -159,7 +156,7 @@ impl DkimKeyRecord {
                 "t" => {
                     let mut fs = vec![];
 
-                    for s in parse_colon_separated_tag_value(value) {
+                    for s in tag_list::parse_colon_separated_value(value) {
                         if s.eq_ignore_ascii_case("y") {
                             fs.push(Flags::Testing);
                         } else if s.eq_ignore_ascii_case("s") {

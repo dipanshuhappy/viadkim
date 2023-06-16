@@ -7,7 +7,7 @@ use viadkim::{
     crypto::{HashAlgorithm, SigningKey},
     header,
     signature::{DomainName, Selector, SignatureAlgorithm},
-    signer::{SignRequest, Signer, SigningStatus},
+    signer::{SignRequest, SignResult, Signer},
 };
 
 #[tokio::main]
@@ -41,8 +41,12 @@ async fn main() {
     request.valid_duration = None;
     request.copy_headers = false;
     // request.body_length = viadkim::signer::BodyLength::OnlyMessageLength;
-    // request.identity = Some(viadkim::signature::Identity::new("\"abc;de\"@中文.gluet.ch").unwrap());
+    // request.identity = Some(viadkim::signature::Identity::new("\"abc|;de\"@中文.gluet.ch").unwrap());
     // request.algorithm = SignatureAlgorithm::RsaSha1;
+    // request.format.tag_order = Some(Box::new(|a, b| a.cmp(b)));
+    // request.format.line_width = 64.try_into().unwrap();
+    // request.format.indentation = "  ".into();
+    // request.extra_tags = vec![("r".into(), "y".into())];
 
     let mut msg = String::new();
     let n = io::stdin().read_to_string(&mut msg).await.unwrap();
@@ -61,18 +65,15 @@ async fn main() {
 
     let sigs = signer.finish().await;
 
-    for (_i, sig) in sigs.into_iter().enumerate() {
-        match sig.status {
-            SigningStatus::Success {
-                signature: _sig,
-                header_name,
-                header_value,
-            } => {
+    for (_i, result) in sigs.into_iter().enumerate() {
+        match result {
+            Ok(result) => {
+                let SignResult { header_name, header_value, .. } = result;
                 let header_value = header_value.replace("\r\n", "\n");
                 println!("{header_name}:{header_value}");
             }
-            SigningStatus::Error { error } => {
-                println!("ERROR: {error:?}");
+            Err(e) => {
+                println!("ERROR: {e:?}");
             }
         }
     }

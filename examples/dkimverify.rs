@@ -1,7 +1,10 @@
 use std::{env, process};
 use tokio::io::{self, AsyncReadExt};
 use trust_dns_resolver::TokioAsyncResolver;
-use viadkim::{header, verifier::Config, Verifier};
+use viadkim::{
+    header,
+    verifier::{Config, Verifier},
+};
 
 #[tokio::main]
 async fn main() {

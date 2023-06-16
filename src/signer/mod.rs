@@ -6,15 +6,16 @@ mod sign;
 
 pub use crate::signer::request::{
     default_signed_headers, default_unsigned_headers, select_headers, BodyLength, HeaderSelection,
-    SignRequest, Timestamp,
+    OutputFormat, SignRequest, Timestamp,
 };
 
 use crate::{
     crypto::SigningKey,
-    header::HeaderFields,
+    header::{FieldName, FieldBody, HeaderField, HeaderFields},
     message_hash::{BodyHasher, BodyHasherBuilder, BodyHasherStance},
     signature::DkimSignature,
 };
+use std::fmt::{self, Display, Formatter};
 
 struct SigningTask<T> {
     request: SignRequest<T>,
@@ -29,36 +30,70 @@ pub enum SignerError {
     Overflow,
     TooManyRequests,
     EmptyRequests,
+    ZeroExpirationDuration,
+    InvalidExtraTags,
     FromHeaderNotSigned,
     InvalidSignedFieldName,
     MissingFromHeader,
-    KeyTypeMismatch,
+    IncompatibleKeyType,
     InsufficientBodyLength,
     SigningFailure,
 }
 
-// TODO does this have to be a separate type? introduce `SigningResults`?
-#[derive(Debug, PartialEq)]
-pub struct SigningResult {
-    pub status: SigningStatus,
+// TODO names: Sign{,er,ing}? Result/Output?
+// introduce alias: type SigningResult = Result<SignResult, SignerError>;
+// or still use an own type for Result<SR, SE>? Compare with VerificationStatus?
+
+struct SignResultHeaderDisplay<'a> {
+    name: &'a str,
+    value: &'a str,
 }
 
-// TODO revisit
+impl Display for SignResultHeaderDisplay<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.name, self.value)
+    }
+}
+
+/// A successful signing result.
+///
+/// The header name and value must be concatenated with only a colon character
+/// in between, no additional whitespace; use [`SignResult::format_header`].
 #[derive(Debug, PartialEq)]
-pub enum SigningStatus {
-    Success {
-        // boxing suggested by clippy because of of enum variant size; reconsider
-        signature: Box<DkimSignature>,
-        // Usage: header_name and header_value are meant to be concatenated with
-        // only an intervening colon, no additional whitespace! this is vital for
-        // "simple" header canonicalization where whitespace changes are not allowed
-        // TODO provide a method format_header(&self) -> String { format!("{name}:{value}") }
-        header_name: String,
-        header_value: String,
-    },
-    Error {
-        error: SignerError,
-    },
+pub struct SignResult {
+    /// DKIM signature data used for producing the formatted header.
+    pub signature: DkimSignature,
+    /// The *DKIM-Signature* header name.
+    pub header_name: String,
+    /// The *DKIM-Signature* header value. Continuation lines use CRLF line
+    /// endings.
+    pub header_value: String,
+}
+
+impl SignResult {
+    /// Produces a formatted header, consisting of name, colon, and value. The
+    /// output uses CRLF line endings.
+    pub fn format_header(&self) -> impl Display + '_ {
+        SignResultHeaderDisplay {
+            name: &self.header_name,
+            value: &self.header_value,
+        }
+    }
+
+    /// Converts this result into a header field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the result’s header name and value are not a well-formed
+    /// header field. (`SignResult` output produced by `Signer` is always
+    /// well-formed and therefore calling this method on such values does not
+    /// panic.)
+    pub fn to_header_field(&self) -> HeaderField {
+        (
+            FieldName::new(self.header_name.as_str()).unwrap(),
+            FieldBody::new(self.header_value.as_bytes()).unwrap(),
+        )
+    }
 }
 
 /// A signer for an email message.
@@ -106,6 +141,9 @@ where
                 return Err(SignerError::TooManyRequests);
             }
 
+            // eagerly validate requests and abort entire procedure if any are unusable
+            request::validate_request(&request)?;
+
             // TODO check that From is in signed headers, does not contain ; here already?
 
             // TODO check identity domain is subdomain of signing domain
@@ -151,16 +189,14 @@ where
 
     // Doesn't actually need async, but may use it to introduce artificial await points?
     /// Performs the actual signing and returns the resulting signatures.
-    pub async fn finish(self) -> Vec<SigningResult> {
+    pub async fn finish(self) -> Vec<Result<SignResult, SignerError>> {
         let hasher_results = self.body_hasher.finish();
 
         let mut result = vec![];
 
         for task in self.tasks {
             if let Some(error) = task.error {
-                result.push(SigningResult {
-                    status: SigningStatus::Error { error },
-                });
+                result.push(Err(error));
                 continue;
             }
 

@@ -1,0 +1,5 @@
+image: rust
+test:
+  script:
+    - cargo test --verbose --features trust-dns-resolver --all-targets
+    - cargo test --verbose --features trust-dns-resolver --doc

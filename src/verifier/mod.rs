@@ -185,6 +185,7 @@ impl VerificationStatus {
     }
 }
 
+// TODO rename, not a verifier error but a verification error (but conflicts with different VerificationError)
 /// An error that occurs when using a [`Verifier`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum VerifierError {

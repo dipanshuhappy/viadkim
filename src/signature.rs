@@ -3,10 +3,7 @@
 use crate::{
     crypto::{HashAlgorithm, KeyType},
     header::FieldName,
-    tag_list::{
-        self, parse_base64_tag_value, parse_colon_separated_tag_value, parse_dqp_header_field,
-        parse_dqp_tag_value, TagList, TagSpec,
-    },
+    tag_list::{self, TagList, TagSpec},
     util::{self, CanonicalStr},
 };
 use bstr::ByteSlice;
@@ -102,7 +99,7 @@ impl Display for DomainName {
 
 impl fmt::Debug for DomainName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", &self.0)
+        write!(f, "{self}")
     }
 }
 
@@ -181,7 +178,7 @@ impl Display for Selector {
 
 impl fmt::Debug for Selector {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", &self.0)
+        write!(f, "{self}")
     }
 }
 
@@ -283,6 +280,8 @@ impl Display for ParseIdentityError {
 impl Error for ParseIdentityError {}
 
 // TODO note terminology Identity, Identifier, SDID, AUID in sections 2.3 to 2.6
+
+// TODO don't derive Debug, do manual impl
 
 /// An agent or user identifier.
 ///
@@ -562,6 +561,16 @@ impl FromStr for CanonicalizationAlgorithm {
 }
 
 /// A pair of header/body canonicalization algorithms.
+///
+/// # Examples
+///
+/// ```
+/// use viadkim::signature::{Canonicalization, CanonicalizationAlgorithm::*};
+///
+/// let canon = Canonicalization::from((Relaxed, Simple));
+///
+/// assert_eq!(canon.to_string(), "relaxed/simple");
+/// ```
 #[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
 pub struct Canonicalization {
     /// The header canonicalization.
@@ -592,6 +601,12 @@ impl Display for Canonicalization {
 impl fmt::Debug for Canonicalization {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{self}")
+    }
+}
+
+impl From<(CanonicalizationAlgorithm, CanonicalizationAlgorithm)> for Canonicalization {
+    fn from((header, body): (CanonicalizationAlgorithm, CanonicalizationAlgorithm)) -> Self {
+        Self { header, body }
     }
 }
 
@@ -708,7 +723,6 @@ pub struct DkimSignature {
     // unable or unwilling to commit to an individual user name within the
     // domain. It can do so by including the domain part but not the local-part
     // of the identity.’
-    // - z= and extras need not be Option, because if present will be non-empty?
 
     /// The *a=* tag.
     pub algorithm: SignatureAlgorithm,
@@ -733,10 +747,10 @@ pub struct DkimSignature {
     /// The *x=* tag.
     pub expiration: Option<u64>,
     /// The *z=* tag.
-    pub copied_headers: Option<Box<[(FieldName, Box<[u8]>)]>>,  // not empty, name may contain `;`!
+    pub copied_headers: Box<[(FieldName, Box<[u8]>)]>,  // names may contain `;`
     /// Additional, unknown tag name and value pairs. (For example, for RFC 6651
     /// Reporting.)
-    pub extra_tags: Option<Box<[(Box<str>, Box<str>)]>>,
+    pub extra_tags: Box<[(Box<str>, Box<str>)]>,
 }
 
 impl DkimSignature {
@@ -779,13 +793,13 @@ impl DkimSignature {
                     algorithm = Some(value);
                 }
                 "b" => {
-                    let value = parse_base64_tag_value(value)
+                    let value = tag_list::parse_base64_value(value)
                         .map_err(|_| DkimSignatureErrorKind::InvalidBase64)?;
 
                     signature_data = Some(value.into());
                 }
                 "bh" => {
-                    let value = parse_base64_tag_value(value)
+                    let value = tag_list::parse_base64_value(value)
                         .map_err(|_| DkimSignatureErrorKind::InvalidBase64)?;
 
                     body_hash = Some(value.into());
@@ -805,7 +819,7 @@ impl DkimSignature {
                 "h" => {
                     let mut sh = vec![];
 
-                    for s in parse_colon_separated_tag_value(value) {
+                    for s in tag_list::parse_colon_separated_value(value) {
                         let name = FieldName::new(s)
                             .map_err(|_| DkimSignatureErrorKind::InvalidSignedHeaderName)?;
                         sh.push(name);
@@ -821,8 +835,13 @@ impl DkimSignature {
                     signed_headers = Some(sh.into());
                 }
                 "i" => {
-                    let value = parse_dqp_tag_value(value)
+                    let value = tag_list::parse_quoted_printable_value(value)
                         .map_err(|_| DkimSignatureErrorKind::InvalidIdentity)?;
+
+                    // This identifier is expected to contain UTF-8 only.
+                    let value = String::from_utf8(value)
+                        .map_err(|_| DkimSignatureErrorKind::InvalidIdentity)?;
+
                     let value = Identity::new(&value)
                         .map_err(|_| DkimSignatureErrorKind::InvalidIdentity)?;
 
@@ -835,11 +854,15 @@ impl DkimSignature {
                     body_length = Some(value);
                 }
                 "q" => {
+                    // Note that even though *q=* is specified as being plain
+                    // text, the ABNF then allows qp-hdr-value (or rather
+                    // ‘dkim-quoted-printable with colon encoded’, see erratum
+                    // 4810). We skip this by simply checking for presence of
+                    // `dns/txt`, generally the only sensible value.
+
                     let mut dns_txt_seen = false;
 
-                    // TODO note that even though q= is specified as being "plain-text", the ABNF
-                    // then allows dqp? see also erratum 4810
-                    for s in parse_colon_separated_tag_value(value) {
+                    for s in tag_list::parse_colon_separated_value(value) {
                         if s.eq_ignore_ascii_case("dns/txt") {
                             dns_txt_seen = true;
                         }
@@ -871,7 +894,7 @@ impl DkimSignature {
                     let mut headers = vec![];
 
                     for piece in value.split('|') {
-                        let (name, value) = parse_dqp_header_field(piece)
+                        let (name, value) = tag_list::parse_quoted_printable_header_field(piece)
                             .map_err(|_| DkimSignatureErrorKind::InvalidCopiedHeaderField)?;
                         headers.push((name, value));
                     }
@@ -908,12 +931,8 @@ impl DkimSignature {
         }
 
         let canonicalization = canonicalization.unwrap_or_default();
-
-        let extra_tags = if extra_tags.is_empty() {
-            None
-        } else {
-            Some(extra_tags.into())
-        };
+        let copied_headers = copied_headers.unwrap_or_default();
+        let extra_tags = extra_tags.into();
 
         Ok(Self {
             algorithm,
@@ -952,6 +971,8 @@ impl FromStr for DkimSignature {
             Ok(sig) => Ok(sig),
             Err(e) => {
                 // TODO attempt to find _some_ info for diagnostics; more?
+                // TODO return decoded data (DomainName, &[u8]) or strings??
+                // eg RFC 6008 [header.b=] explicitly talks about [string] 'characters' of the DKIM-sig b= value
                 let domain = tag_list.as_ref().iter().find(|spec| spec.name == "d")
                     .and_then(|spec| DomainName::new(spec.value).ok());
                 let signature_data_base64 = tag_list.as_ref().iter().find(|spec| spec.name == "b")
@@ -992,7 +1013,7 @@ impl fmt::Debug for DkimSignature {
             .field("selector", &self.selector)
             .field("timestamp", &self.timestamp)
             .field("expiration", &self.expiration)
-            .field("copied_headers", &self.copied_headers.as_deref().map(CopiedHeaders))
+            .field("copied_headers", &CopiedHeaders(&self.copied_headers))
             .field("extra_tags", &self.extra_tags)
             .finish()
     }
@@ -1003,6 +1024,7 @@ mod tests {
     use super::*;
     use crate::tag_list::TagList;
     use base64ct::{Base64, Encoding};
+    use CanonicalizationAlgorithm::*;
 
     #[test]
     fn domain_name_ok() {
@@ -1022,6 +1044,7 @@ mod tests {
         assert!(DomainName::new("example-.com").is_err());
         assert!(DomainName::new("example.123").is_err());
         assert!(DomainName::new("example.com.").is_err());
+        assert!(DomainName::new("ex mple.com").is_err());
         assert!(DomainName::new("xn---y.example.com").is_err());
     }
 
@@ -1097,10 +1120,7 @@ mod tests {
                 body_hash: Base64::decode_vec("MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=")
                     .unwrap()
                     .into(),
-                canonicalization: Canonicalization {
-                    header: CanonicalizationAlgorithm::Simple,
-                    body: CanonicalizationAlgorithm::Simple,
-                },
+                canonicalization: (Simple, Simple).into(),
                 domain: DomainName::new("example.net").unwrap(),
                 signed_headers: [
                     FieldName::new("from").unwrap(),
@@ -1114,28 +1134,26 @@ mod tests {
                 body_length: None,
                 timestamp: Some(1117574938),
                 expiration: Some(1118006938),
-                copied_headers: Some(
-                    [
-                        (
-                            FieldName::new("From").unwrap(),
-                            Box::from(*b"foo@eng.example.net")
-                        ),
-                        (
-                            FieldName::new("To").unwrap(),
-                            Box::from(*b"joe@example.com")
-                        ),
-                        (
-                            FieldName::new("Subject").unwrap(),
-                            Box::from(*b"demo run")
-                        ),
-                        (
-                            FieldName::new("Date").unwrap(),
-                            Box::from(*b"July 5, 2005 3:44:08 PM -0700")
-                        ),
-                    ]
-                    .into()
-                ),
-                extra_tags: None,
+                copied_headers: [
+                    (
+                        FieldName::new("From").unwrap(),
+                        Box::from(*b"foo@eng.example.net")
+                    ),
+                    (
+                        FieldName::new("To").unwrap(),
+                        Box::from(*b"joe@example.com")
+                    ),
+                    (
+                        FieldName::new("Subject").unwrap(),
+                        Box::from(*b"demo run")
+                    ),
+                    (
+                        FieldName::new("Date").unwrap(),
+                        Box::from(*b"July 5, 2005 3:44:08 PM -0700")
+                    ),
+                ]
+                .into(),
+                extra_tags: [].into(),
             }
         );
     }
@@ -1169,10 +1187,7 @@ mod tests {
                 body_hash: Base64::decode_vec("MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=")
                     .unwrap()
                     .into(),
-                canonicalization: Canonicalization {
-                    header: CanonicalizationAlgorithm::Simple,
-                    body: CanonicalizationAlgorithm::Simple,
-                },
+                canonicalization: (Simple, Simple).into(),
                 domain: DomainName::new("example.net").unwrap(),
                 signed_headers: [
                     FieldName::new("from").unwrap(),
@@ -1186,20 +1201,18 @@ mod tests {
                 body_length: None,
                 timestamp: Some(1117574938),
                 expiration: Some(1118006938),
-                copied_headers: None,
-                extra_tags: Some(
-                    [
-                        (
-                            "y".into(),
-                            "curious\r\n    value".into(),
-                        ),
-                        (
-                            "zz".into(),
-                            "".into(),
-                        ),
-                    ]
-                    .into()
-                ),
+                copied_headers: [].into(),
+                extra_tags: [
+                    (
+                        "y".into(),
+                        "curious\r\n    value".into(),
+                    ),
+                    (
+                        "zz".into(),
+                        "".into(),
+                    ),
+                ]
+                .into(),
             }
         );
     }

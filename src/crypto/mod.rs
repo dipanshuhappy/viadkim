@@ -70,13 +70,17 @@ use std::{
     io::{self, ErrorKind},
 };
 
+/// A (private) signing key.
 #[derive(Debug)]
 pub enum SigningKey {
+    /// The RSA signing key.
     Rsa(RsaPrivateKey),
+    /// The Ed25519 signing key.
     Ed25519(Ed25519SigningKey),
 }
 
 impl SigningKey {
+    /// Returns this key’s key type.
     pub fn key_type(&self) -> KeyType {
         match self {
             Self::Rsa(_) => KeyType::Rsa,
@@ -105,6 +109,7 @@ impl SigningKey {
         }
     }
 
+    /// Returns the length in bytes of signatures produced with this key.
     pub fn signature_length(&self) -> usize {
         match self {
             Self::Rsa(k) => {
@@ -122,9 +127,12 @@ impl AsRef<SigningKey> for SigningKey {
     }
 }
 
+/// A (public) verifying key.
 #[derive(Debug)]
 pub enum VerifyingKey {
+    /// The RSA verifying key.
     Rsa(RsaPublicKey),
+    /// The Ed25519 verifying key.
     Ed25519(Ed25519VerifyingKey),
 }
 
@@ -150,9 +158,12 @@ impl VerifyingKey {
     }
 }
 
+/// The type of a key.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum KeyType {
+    /// An RSA key.
     Rsa,
+    /// An Ed25519 key.
     Ed25519,
 }
 
@@ -165,10 +176,17 @@ impl CanonicalStr for KeyType {
     }
 }
 
+/// A hash algorithm.
+///
+/// When feature `sha1` is enabled, this enum will have a second variant `Sha1`
+/// representing the SHA-1 hash algorithm. This variant is hidden behind a
+/// feature flag, because SHA-1 is insecure and its use is strongly discouraged.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HashAlgorithm {
+    /// The SHA-256 algorithm.
     Sha256,
     #[cfg(feature = "sha1")]
+    /// The SHA-1 algorithm.
     Sha1,
 }
 

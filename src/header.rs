@@ -17,6 +17,7 @@ use std::{
     fmt::{self, Display, Formatter},
     hash::{Hash, Hasher},
     mem,
+    vec::IntoIter,
 };
 
 pub type HeaderField = (FieldName, FieldBody);
@@ -26,10 +27,10 @@ pub struct HeaderFieldError;
 
 /// A collection of header fields that can be used for DKIM processing.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HeaderFields(Box<[HeaderField]>);
+pub struct HeaderFields(Vec<HeaderField>);
 
 impl HeaderFields {
-    pub fn new(value: impl Into<Box<[HeaderField]>>) -> Result<Self, HeaderFieldError> {
+    pub fn new(value: impl Into<Vec<HeaderField>>) -> Result<Self, HeaderFieldError> {
         let value = value.into();
         if value.is_empty() {
             return Err(HeaderFieldError);
@@ -56,13 +57,51 @@ impl AsRef<[HeaderField]> for HeaderFields {
     }
 }
 
+impl From<HeaderFields> for Vec<HeaderField> {
+    fn from(header_fields: HeaderFields) -> Self {
+        header_fields.0
+    }
+}
+
+impl IntoIterator for HeaderFields {
+    type Item = HeaderField;
+    type IntoIter = IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 // Our `FieldName` allows RFC 5322 header field names; but note that ‘;’ is not
 // practical in DKIM.
 /// A header field name.
+///
+/// # Examples
+///
+/// ```
+/// use viadkim::header::FieldName;
+///
+/// let name = FieldName::new("From")?;
+///
+/// assert_eq!(name, "from");
+/// assert_ne!(name.as_ref(), "from");
+/// # Ok::<_, viadkim::header::HeaderFieldError>(())
+/// ```
 #[derive(Clone, Eq)]
 pub struct FieldName(Box<str>);
 
 impl FieldName {
+    /// Creates a new header field name containing the given string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use viadkim::header::FieldName;
+    ///
+    /// assert!(FieldName::new("From").is_ok());
+    /// assert!(FieldName::new("From!?#$;").is_ok());
+    /// assert!(FieldName::new("From ").is_err());
+    /// ```
     pub fn new(value: impl Into<Box<str>>) -> Result<Self, HeaderFieldError> {
         let value = value.into();
 
@@ -110,6 +149,18 @@ impl Hash for FieldName {
 pub struct FieldBody(Box<[u8]>);
 
 impl FieldBody {
+    /// Creates a new header field body containing the given bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use viadkim::header::FieldBody;
+    ///
+    /// assert!(FieldBody::new(*b" Hey!").is_ok());
+    /// assert!(FieldBody::new(*b" Hey\nyou!").is_err());
+    /// assert!(FieldBody::new(*b" Hey\n\tyou!").is_err());
+    /// assert!(FieldBody::new(*b" Hey\r\n\tyou!").is_ok());
+    /// ```
     pub fn new(value: impl Into<Box<[u8]>>) -> Result<Self, HeaderFieldError> {
         let value = value.into();
 
@@ -150,6 +201,23 @@ impl fmt::Debug for FieldBody {
 }
 
 /// Parses a header block into header fields. Convenience function.
+///
+/// This function uses [`str::lines`] to split the input into lines, and
+/// therefore accepts both LF and CRLF line breaks.
+///
+/// # Examples
+///
+/// ```
+/// # use viadkim::header::parse_header;
+/// let headers = parse_header("\
+/// Date: x
+/// From: me <me@example.com>
+/// To: you <you@example.com>
+/// Subject: hi
+///   dear!
+/// ").unwrap();
+/// assert_eq!(headers.as_ref().len(), 4);
+/// ```
 pub fn parse_header(s: &str) -> Result<HeaderFields, HeaderFieldError> {
     let mut lines = s.lines();
 

@@ -1,6 +1,4 @@
-// Parsing utilities.
-
-// TODO revisit module, move elsewhere?
+//! Common parsing utilities.
 
 pub fn strip_suffix<'a>(s: &'a str, suffix: &str) -> &'a str {
     debug_assert!(s.ends_with(suffix));
@@ -8,18 +6,27 @@ pub fn strip_suffix<'a>(s: &'a str, suffix: &str) -> &'a str {
 }
 
 const CRLF: &str = "\r\n";
-//const CRLF_B: &[u8] = b"\r\n";
 
 // FWS = ([*WSP CRLF] 1*WSP)
+
+/// Strips one occurrence of folding whitespace.
 pub fn strip_fws(input: &str) -> Option<&str> {
+    // Implementation note: We had considered a more eager, ‘look-ahead’
+    // approach that refuses to strip `"  \r\nabc..."`. However, this would be
+    // inconsistent with the usual idiom, that strip_ simply eats as many valid
+    // characters as possible, and if any are possible it is a success.
     if let Some(s) = strip_wsp(input) {
-        if let Some(s) = s.strip_prefix(CRLF) {
-            strip_wsp(s)
-        } else {
-            Some(s)
-        }
+        s.strip_prefix(CRLF).and_then(strip_wsp).or(Some(s))
     } else {
         input.strip_prefix(CRLF).and_then(strip_wsp)
+    }
+}
+
+pub fn rstrip_fws(input: &str) -> Option<&str> {
+    let s = rstrip_wsp(input)?;
+    match s.strip_suffix(CRLF) {
+        Some(s) => rstrip_wsp(s).or(Some(s)),
+        None => Some(s),
     }
 }
 
@@ -31,36 +38,41 @@ fn strip_wsp(input: &str) -> Option<&str> {
         .map(|s| s.trim_start_matches(is_wsp))
 }
 
+fn rstrip_wsp(input: &str) -> Option<&str> {
+    input
+        .strip_suffix(is_wsp)
+        .map(|s| s.trim_end_matches(is_wsp))
+}
+
 pub fn is_wsp(c: char) -> bool {
     matches!(c, ' ' | '\t')
 }
 
-/*
-pub fn strip_fws_b(input: &[u8]) -> Option<&[u8]> {
-    if let Some(s) = strip_wsp_b(input) {
-        if let Some(s) = s.strip_prefix(CRLF_B) {
-            strip_wsp_b(s)
-        } else {
-            Some(s)
-        }
-    } else {
-        input.strip_prefix(CRLF_B).and_then(strip_wsp_b)
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn strip_wsp_b(input: &[u8]) -> Option<&[u8]> {
-    fn strip(input: &[u8]) -> Option<&[u8]> {
-        input.strip_prefix(b" ").or_else(|| input.strip_prefix(b"\t"))
+    #[test]
+    fn strip_fws_ok() {
+        assert_eq!(strip_fws(""), None);
+        assert_eq!(strip_fws("x"), None);
+        assert_eq!(strip_fws(" x"), Some("x"));
+        assert_eq!(strip_fws("\r\n"), None);
+        assert_eq!(strip_fws(" \r\n"), Some("\r\n"));
+        assert_eq!(strip_fws(" \r\nx"), Some("\r\nx"));
+        assert_eq!(strip_fws(" \r\n "), Some(""));
+        assert_eq!(strip_fws(" \r\n x"), Some("x"));
+        assert_eq!(strip_fws("\r\nx"), None);
+        assert_eq!(strip_fws("\r\n x"), Some("x"));
     }
 
-    let mut s = strip(input)?;
-    while let Some(sx) = strip(s) {
-        s = sx;
+    #[test]
+    fn rstrip_fws_ok() {
+        assert_eq!(rstrip_fws(""), None);
+        assert_eq!(rstrip_fws("x"), None);
+        assert_eq!(rstrip_fws("x "), Some("x"));
+        assert_eq!(rstrip_fws("\r\n"), None);
+        assert_eq!(rstrip_fws("x\r\n "), Some("x"));
+        assert_eq!(rstrip_fws("x \r\n "), Some("x"));
     }
-    Some(s)
-}
-*/
-
-pub fn is_hexdig(c: char) -> bool {
-    c.is_ascii_hexdigit()
 }

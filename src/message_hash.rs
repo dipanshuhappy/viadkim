@@ -37,6 +37,7 @@ pub fn compute_data_hash(
 
 /// The stance of the body hasher with regard to additional body content.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[must_use]
 pub enum BodyHasherStance {
     // Note: the stance does not represent the ultimate truth: `Done` means it
     // is definitely done, but `Interested` is not necessarily true, because the

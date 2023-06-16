@@ -1,11 +1,21 @@
 use crate::{
+    crypto::SigningKey,
     header::{FieldName, HeaderFields},
     signature::{
         Canonicalization, DomainName, Identity, Selector, SignatureAlgorithm, DKIM_SIGNATURE_NAME,
     },
-    signer::format::LINE_WIDTH,
+    signer::{
+        format::{self, LINE_WIDTH},
+        SignerError,
+    },
+    tag_list,
 };
-use std::{num::TryFromIntError, time::Duration};
+use std::{
+    cmp::Ordering,
+    collections::HashSet,
+    num::{NonZeroUsize, TryFromIntError},
+    time::Duration,
+};
 
 /// A generator for the body length limit tag.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -115,31 +125,71 @@ pub fn default_unsigned_headers() -> Vec<FieldName> {
         .collect()
 }
 
-pub struct SignRequest<T> {
-    // Key
-    pub signing_key: T,
-
-    // Signature
-    pub algorithm: SignatureAlgorithm,
-    pub canonicalization: Canonicalization,
-    pub header_selection: HeaderSelection,
-    pub domain: DomainName,
-    pub identity: Option<Identity>,
-    pub selector: Selector,
-    pub body_length: BodyLength,
-    pub copy_headers: bool,  // copy all headers used to create the signature in z= tag
-    pub timestamp: Option<Timestamp>,
-    pub valid_duration: Option<Duration>,
-    pub header_name: String,  // ~"DKIM-Signature"
-    // TODO extra tags:
-    // pub extra_tags: Vec<(String, String)>,
-
-    // Additional config
-    pub line_width: usize,
-    // TODO tags_order: d=, s=, a=, bh=, b=, t=, x= ... (?)
+/// Formatting options.
+pub struct OutputFormat {
+    // TODO validate header_name input: ~"DKIM-Signature"
+    /// The header name, must be equal to `DKIM-Signature` ignoring case.
+    pub header_name: String,
+    /// The maximum line width in characters to use when breaking lines. The
+    /// default is 78.
+    pub line_width: NonZeroUsize,
+    // TODO validate indentation input: !is_empty() && all matches!(' ' | '\t')
+    /// The indentation whitespace to use for continuation lines. Must be a
+    /// non-empty sequence of space and tab characters. The default is `"\t"`.
+    pub indentation: String,
+    /// A comparator applied to tag names that determines the order of the tags
+    /// included in the signature.
+    pub tag_order: Option<Box<dyn Fn(&str, &str) -> Ordering + Send + Sync>>,
     // TODO ascii_compat: bool, (encode d= s= i= domain in A-label/ASCII form?)
 }
 
+impl Default for OutputFormat {
+    fn default() -> Self {
+        Self {
+            header_name: DKIM_SIGNATURE_NAME.into(),
+            line_width: LINE_WIDTH.try_into().unwrap(),
+            indentation: "\t".into(),
+            tag_order: None,
+        }
+    }
+}
+
+/// A request for creation of a DKIM signature.
+pub struct SignRequest<T> {
+    /// The key to use for producing the cryptographic signature.
+    pub signing_key: T,
+
+    /// The signature algorithm to use in the *a=* tag. Must be compatible with
+    /// the signing key.
+    pub algorithm: SignatureAlgorithm,
+    /// The canonicalization to use in the *c=* tag.
+    pub canonicalization: Canonicalization,
+    /// The selection of headers to include in the *h=* tag.
+    pub header_selection: HeaderSelection,
+    /// The signing domain to use in the *d=* tag.
+    pub domain: DomainName,
+    /// The agent or user identifier to use in the *i=* tag.
+    pub identity: Option<Identity>,
+    /// The selector to use in the *s=* tag.
+    pub selector: Selector,
+    /// The strategy to use for generating the *l=* tag.
+    pub body_length: BodyLength,
+    /// Whether to record all headers used to create the signature in the *z=*
+    /// tag.
+    pub copy_headers: bool,
+    /// The timestamp value to record in the *t=* tag.
+    pub timestamp: Option<Timestamp>,
+    /// The duration for which the signature will remain valid (*x=* tag).
+    pub valid_duration: Option<Duration>,
+    /// Additional tag/value pairs to include in the signature.
+    pub extra_tags: Vec<(String, String)>,
+
+    /// The formatting options to use for producing the formatted
+    /// *DKIM-Signature* header.
+    pub format: OutputFormat,
+}
+
+// TODO consider a builder instead
 impl<T> SignRequest<T> {
     pub fn new(
         domain: DomainName,
@@ -162,14 +212,39 @@ impl<T> SignRequest<T> {
             body_length: BodyLength::All,
             copy_headers: false,
             timestamp: Some(Timestamp::Now),
-            // TODO forbid zero duration -> would create invalid signature
             valid_duration: Some(Duration::from_secs(60 * 60 * 24 * 5)),  // five days
             // note that five days is also used as duration in the example in §3.5
-            header_name: DKIM_SIGNATURE_NAME.into(),
+            extra_tags: vec![],
 
-            line_width: LINE_WIDTH,
+            format: Default::default(),
         }
     }
+}
+
+pub fn validate_request<T: AsRef<SigningKey>>(request: &SignRequest<T>) -> Result<(), SignerError> {
+    if request.signing_key.as_ref().key_type() != request.algorithm.key_type() {
+        return Err(SignerError::IncompatibleKeyType);
+    }
+
+    if let Some(duration) = request.valid_duration {
+        if duration.as_secs() == 0 {
+            return Err(SignerError::ZeroExpirationDuration);
+        }
+    }
+
+    // TODO valid header selection (Manual must contain From)
+
+    let mut tags_seen = HashSet::new();
+    if request.extra_tags.iter().any(|(name, value)| {
+        !tags_seen.insert(name)
+            || !tag_list::is_tag_name(name)
+            || !tag_list::is_tag_value(value)
+            || format::is_output_tag(name)
+    }) {
+        return Err(SignerError::InvalidExtraTags);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
