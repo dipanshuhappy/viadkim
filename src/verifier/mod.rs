@@ -1,3 +1,19 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 //! Verifier and supporting types.
 
 mod header;
@@ -11,19 +27,24 @@ use crate::{
     crypto::VerificationError,
     header::{FieldName, HeaderFields},
     message_hash::{
-        body_hasher_key, BodyHasher, BodyHasherBuilder, BodyHasherError, BodyHasherStance,
+        body_hasher_key, BodyHasher, BodyHasherBuilder, BodyHasherError, BodyHasherResults,
+        BodyHasherStance,
     },
+    record::DkimKeyRecord,
     signature::{DkimSignature, DkimSignatureError, DkimSignatureErrorKind},
     util::{self, CanonicalStr},
-    verifier::{header::HeaderVerifier, query::Queries},
+    verifier::header::{HeaderVerifier, VerifyStatus},
 };
 use std::{
+    error::Error,
     fmt::{self, Display, Formatter},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 use tracing::trace;
 
 /// Configuration for a verifier process.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     /// The maximum duration of public key record lookups. When this duration is
     /// exceeded evaluation fails (temporary error).
@@ -37,6 +58,23 @@ pub struct Config {
     /// signature will not validate. Note that the header `From` is always
     /// required by the RFC independent of this configuration setting.
     pub required_signed_headers: Vec<FieldName>,
+
+    /// Minimum acceptable key size in bits. When the key size of an RSA public
+    /// key is below this limit, the signature will not validate.
+    ///
+    /// Note that there is a compile-time hard lower bound of acceptable key
+    /// sizes, which will lead to failure to validate independent of this
+    /// setting. By default, the minimum key size is 1024; if feature
+    /// `pre-rfc8301` is enabled, the minimum key size is 512.
+    pub min_key_bits: usize,
+
+    /// When this flag is set, signatures using the SHA-1 hash algorithm are
+    /// acceptable.
+    ///
+    /// Note that the SHA-1 hash algorithm is only available when feature
+    /// `pre-rfc8301` is enabled. This setting is only effective when that
+    /// feature is enabled.
+    pub allow_sha1: bool,
 
     /// If a DKIM signature has the l= tag, and the body length given in this
     /// tag is less than the actual message body length, the signature will not
@@ -57,9 +95,6 @@ pub struct Config {
 
     /// The `SystemTime` value to use as the instant ‘now’.
     pub fixed_system_time: Option<SystemTime>,
-
-    // TODO
-    // min_key_size: u32,   // else PolicyError ...
 }
 
 impl Config {
@@ -78,6 +113,8 @@ impl Default for Config {
             lookup_timeout: Duration::from_secs(10),
             max_signatures: 10,
             required_signed_headers: vec![],
+            min_key_bits: 1024,
+            allow_sha1: false,
             forbid_partially_signed_body: false,
             fail_if_expired: true,
             fail_if_in_future: true,
@@ -93,6 +130,8 @@ pub enum PolicyError {
     ForbidPartiallySignedBody,
     SignatureExpired,
     TimestampInFuture,
+    DisallowedSha1Hash,
+    KeyTooSmall,
 }
 
 impl Display for PolicyError {
@@ -102,65 +141,86 @@ impl Display for PolicyError {
             Self::ForbidPartiallySignedBody => write!(f, "partial body signing not acceptable"),
             Self::SignatureExpired => write!(f, "signature expired"),
             Self::TimestampInFuture => write!(f, "timestamp in future"),
+            Self::DisallowedSha1Hash => write!(f, "hash algorithm SHA-1 not acceptable"),
+            Self::KeyTooSmall => write!(f, "public key size too small"),
         }
     }
 }
 
+impl Error for PolicyError {}
+
+/// A verification result arrived at for some DKIM signature header.
 #[derive(Debug, PartialEq)]
 pub struct VerificationResult {
-    pub index: usize,  // index in HeaderFields
-    pub signature: Option<DkimSignature>,
+    /// The verification status.
     pub status: VerificationStatus,
-    pub testing: bool,  // t=y in record
-    pub key_size: Option<usize>,
-    // TODO or share entire DkimKeyRecord instead?
+    /// The index of the evaluated *DKIM-Signature* header in the original
+    /// `HeaderFields` input.
+    pub index: usize,
+    /// The parsed DKIM signature data obtained from the *DKIM-Signature*
+    /// header, if available.
+    pub signature: Option<DkimSignature>,
+    /// The parsed DKIM public key record data used in the verification, if
+    /// available.
+    ///
+    /// The record is behind an `Arc` only so that it may be shared among the
+    /// `VerificationResult`s returned by a call to [`Verifier::finish`].
+    pub key_record: Option<Arc<DkimKeyRecord>>,
 }
 
-// TODO RFC 6376 vs RFC 8601:
-// Success Permfail Tempfail
+/// The verification status of an evaluated DKIM signature.
+///
+/// This type encodes the three DKIM output states described in RFC 6376,
+/// section 3.9: `Success` corresponds to *SUCCESS*, `Failure` corresponds to
+/// both *PERMFAIL* and *TEMPFAIL*.
 #[derive(Debug, PartialEq)]
 pub enum VerificationStatus {
+    /// A *SUCCESS* result status.
     Success,
+    /// A *PERMFAIL* or *TEMPFAIL* result status, with failure cause attached.
     Failure(VerifierError),
 }
 
 impl VerificationStatus {
     // TODO revisit
-    pub fn to_auth_results_kind(&self) -> AuthResultsKind {
+    /// Converts this verification status to an RFC 8601 DKIM result.
+    pub fn to_dkim_auth_result(&self) -> DkimAuthResult {
         use VerifierError::*;
 
         match self {
-            VerificationStatus::Success => AuthResultsKind::Pass,
+            VerificationStatus::Success => DkimAuthResult::Pass,
             VerificationStatus::Failure(error) => match error {
                 WrongKeyType
                 | KeyRecordSyntax
                 | KeyRevoked
                 | DisallowedHashAlgorithm
-                | DisallowedServiceType
                 | DomainMismatch
                 | InsufficientBodyLength
                 | InvalidKeyDomain
-                | NoKeyFound => AuthResultsKind::Permerror,
-                BodyHashMismatch => AuthResultsKind::Fail,
-                KeyLookupTimeout | KeyLookup => AuthResultsKind::Temperror,
+                | NoKeyFound => DkimAuthResult::Permerror,
+                BodyHashMismatch => DkimAuthResult::Fail,
+                KeyLookupTimeout | KeyLookup => DkimAuthResult::Temperror,
                 DkimSignatureHeaderFormat(error) => match &error.kind {
                     DkimSignatureErrorKind::MissingVersionTag
                     | DkimSignatureErrorKind::HistoricAlgorithm
                     | DkimSignatureErrorKind::MissingAlgorithmTag
                     | DkimSignatureErrorKind::MissingSignatureTag
+                    | DkimSignatureErrorKind::EmptySignatureTag
                     | DkimSignatureErrorKind::MissingBodyHashTag
+                    | DkimSignatureErrorKind::EmptyBodyHashTag
                     | DkimSignatureErrorKind::MissingDomainTag
                     | DkimSignatureErrorKind::SignedHeadersEmpty
                     | DkimSignatureErrorKind::FromHeaderNotSigned
                     | DkimSignatureErrorKind::MissingSignedHeadersTag
                     | DkimSignatureErrorKind::MissingSelectorTag
                     | DkimSignatureErrorKind::DomainMismatch
-                    | DkimSignatureErrorKind::ExpirationNotAfterTimestamp
-                    | DkimSignatureErrorKind::InvalidIdentity => AuthResultsKind::Permerror,
+                    | DkimSignatureErrorKind::ExpirationNotAfterTimestamp => DkimAuthResult::Permerror,
                     DkimSignatureErrorKind::UnsupportedVersion
                     | DkimSignatureErrorKind::UnsupportedAlgorithm
                     | DkimSignatureErrorKind::UnsupportedCanonicalization
+                    | DkimSignatureErrorKind::InvalidQueryMethod
                     | DkimSignatureErrorKind::QueryMethodsNotSupported
+                    | DkimSignatureErrorKind::InvalidIdentity
                     | DkimSignatureErrorKind::InvalidDomain
                     | DkimSignatureErrorKind::InvalidBodyLength
                     | DkimSignatureErrorKind::InvalidSelector
@@ -170,31 +230,30 @@ impl VerificationStatus {
                     | DkimSignatureErrorKind::InvalidSignedHeaderName
                     | DkimSignatureErrorKind::InvalidCopiedHeaderField
                     | DkimSignatureErrorKind::Utf8Encoding
-                    | DkimSignatureErrorKind::InvalidTagList => AuthResultsKind::Neutral,
+                    | DkimSignatureErrorKind::InvalidTagList => DkimAuthResult::Neutral,
                 },
                 VerificationFailure(error) => match error {
                     VerificationError::InvalidKey
                     | VerificationError::InsufficientKeySize
-                    | VerificationError::InvalidSignature => AuthResultsKind::Permerror,
-                    VerificationError::VerificationFailure => AuthResultsKind::Fail,
+                    | VerificationError::InvalidSignature => DkimAuthResult::Permerror,
+                    VerificationError::VerificationFailure => DkimAuthResult::Fail,
                 },
-                Policy(_) => AuthResultsKind::Policy,
-                Overflow => AuthResultsKind::Neutral,
+                Policy(_) => DkimAuthResult::Policy,
+                Overflow => DkimAuthResult::Neutral,
             },
         }
     }
 }
 
 // TODO rename, not a verifier error but a verification error (but conflicts with different VerificationError)
-/// An error that occurs when using a [`Verifier`].
+/// An error that occurs when using a verifier.
 #[derive(Clone, Debug, PartialEq)]
 pub enum VerifierError {
-    DkimSignatureHeaderFormat(DkimSignatureError),
+    DkimSignatureHeaderFormat(DkimSignatureError),  // TODO rename DkimSignatureFormat
     WrongKeyType,
-    KeyRecordSyntax,
+    KeyRecordSyntax,  // TODO rename KeyRecordFormat
     KeyRevoked,
     DisallowedHashAlgorithm,
-    DisallowedServiceType,
     DomainMismatch,
     VerificationFailure(VerificationError),
     BodyHashMismatch,
@@ -215,7 +274,6 @@ impl Display for VerifierError {
             Self::KeyRecordSyntax => write!(f, "invalid syntax in key record"),
             Self::KeyRevoked => write!(f, "key in key record revoked"),
             Self::DisallowedHashAlgorithm => write!(f, "hash algorithm not allowed"),
-            Self::DisallowedServiceType => write!(f, "service type not allowed"),
             Self::DomainMismatch => write!(f, "domain mismatch"),
             Self::VerificationFailure(error) => error.fmt(f),
             Self::BodyHashMismatch => write!(f, "body hash mismatch"),
@@ -233,8 +291,8 @@ impl Display for VerifierError {
 /// An RFC 8601 DKIM result.
 ///
 /// The mapping of an RFC 6376 *SUCCESS*, *PERMFAIL*, or *TEMPFAIL* result to an
-/// RFC 8601 DKIM error result is not well defined. Our interpretation of each
-/// result is given in detail below.
+/// RFC 8601 DKIM result is not well defined. Our interpretation of each result
+/// is given in detail below.
 ///
 /// As a general rule, of the error result kinds `Neutral` is the early bail-out
 /// error type, which signals that verification didn’t proceed past a basic
@@ -242,8 +300,9 @@ impl Display for VerifierError {
 /// `Permerror` are error types that are used for more concrete problems
 /// concerning a well-understood signature.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum AuthResultsKind {
-    /// The *none* result. (Not used in this library.)
+pub enum DkimAuthResult {
+    /// The *none* result. This result indicates that a message was not signed.
+    /// (Not used in this library.)
     None,
 
     /// The *pass* result. This result means that verification could be
@@ -291,7 +350,7 @@ pub enum AuthResultsKind {
     Permerror,
 }
 
-impl CanonicalStr for AuthResultsKind {
+impl CanonicalStr for DkimAuthResult {
     fn canonical_str(&self) -> &'static str {
         match self {
             Self::None => "none",
@@ -305,18 +364,17 @@ impl CanonicalStr for AuthResultsKind {
     }
 }
 
-impl Display for AuthResultsKind {
+impl Display for DkimAuthResult {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(self.canonical_str())
     }
 }
 
-struct SigTask {
-    index: usize,
-    sig: Option<DkimSignature>,
+struct VerifierTask {
     status: VerificationStatus,
-    testing: bool,
-    key_size: Option<usize>,
+    index: usize,
+    signature: Option<DkimSignature>,
+    key_record: Option<Arc<DkimKeyRecord>>,
 }
 
 /// A verifier of DKIM signatures in an email message.
@@ -325,28 +383,101 @@ struct SigTask {
 /// three-phase, staged design that allows processing the message in chunks, and
 /// shortcutting unnecessary body processing.
 ///
-/// 1. **[`process_header`][Verifier::process_header]** (async): first,
-///    perform signature verification on the message header and return a
-///    verifier that carries the (preliminary) results; this is where most of
-///    the actual work is done
-/// 2. [`body_chunk`][Verifier::body_chunk]: then, any number of chunks of the
-///    message body are fed to the verification process
+/// 1. **[`verify_header`][Verifier::verify_header]** (async): first, perform
+///    signature verification on the message header and return a verifier that
+///    carries the preliminary results; this is where most of the actual work is
+///    done
+/// 2. [`process_body_chunk`][Verifier::process_body_chunk]: then, any number of
+///    chunks of the message body are fed to the verification process
 /// 3. [`finish`][Verifier::finish]: finally, the body hashes are computed and
 ///    the final verification results are returned
 ///
 /// Compare this with the similar but distinct procedure of
 /// [`Signer`][crate::signer::Signer].
+///
+/// # Examples
+///
+/// The following example shows how to verify a message’s signatures using the
+/// high-level API.
+///
+/// ```
+/// # use std::{future::Future, io::{self, ErrorKind}, pin::Pin};
+/// # #[derive(Clone)]
+/// # struct MockLookupTxt;
+/// # impl viadkim::verifier::LookupTxt for MockLookupTxt {
+/// #     type Answer = Vec<io::Result<Vec<u8>>>;
+/// #     type Query<'a> = Pin<Box<dyn Future<Output = io::Result<Self::Answer>> + Send + 'a>>;
+/// #
+/// #     fn lookup_txt(&self, domain: &str) -> Self::Query<'_> {
+/// #         let domain = domain.to_owned();
+/// #         Box::pin(async move {
+/// #             match domain.as_str() {
+/// #                 "selector._domainkey.example.com." => {
+/// #                     Ok(vec![
+/// #                         Ok(b"v=DKIM1; k=ed25519; p=f8IRGiRaCQ83GCI56F77ueW0l5hinwOG31ZmlSyReBk=".to_vec()),
+/// #                     ])
+/// #                 }
+/// #                 _ => unimplemented!(),
+/// #             }
+/// #         })
+/// #     }
+/// # }
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// use viadkim::*;
+///
+/// let header = "DKIM-Signature: v=1; d=example.com; s=selector; a=ed25519-sha256;\r\n\
+///     \tt=1687435395; x=1687867395; h=Date:Subject:To:From; bh=1zGfaauQ3vmMhm21CGMC23\r\n\
+///     \taJE1JrOoKsgT/wvw9owzE=; b=Ny5/l088Iubyzlq56ab9Xe6/9YDcIvydie0GOI6CEsaIdktjLlA\r\n\
+///     \tOvKuE7wU4203PIMx0MuW7lFLpdRIcPDl3Cg==\r\n\
+///     Received: from smtp.example.com by mail.example.org\r\n\
+///     \twith ESMTPS id A6DE7475; Thu, 22 Jun 2023 14:03:29 +0200\r\n\
+///     From: me@example.com\r\n\
+///     To: you@example.org\r\n\
+///     Subject: Re: Thursday 8pm\r\n\
+///     Date: Thu, 22 Jun 2023 14:03:12 +0200\r\n".parse()?;
+/// let body = b"Hey,\r\n\
+///     \r\n\
+///     Ready for tonight? ;)\r\n";
+///
+/// // Note: Enable Cargo feature `trust-dns-resolver` to make an implementation
+/// // of trait `LookupTxt` available for Trust-DNS’s `TokioAsyncResolver`.
+/// let resolver;  // = TokioAsyncResolver::tokio(...);
+/// # resolver = MockLookupTxt;
+///
+/// let config = Config::default();
+/// # let mut config = config;
+/// # config.fixed_system_time =
+/// #     Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1687435411));
+///
+/// let mut verifier = Verifier::verify_header(&resolver, &header, &config)
+///     .await
+///     .unwrap();
+///
+/// let _ = verifier.process_body_chunk(body);
+///
+/// let results = verifier.finish();
+///
+/// let signature = results.into_iter().next().unwrap();
+///
+/// assert_eq!(signature.status, VerificationStatus::Success);
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// # }).unwrap();
+/// ```
+///
+/// See [`Signer`][crate::signer::Signer] for how the above example message was
+/// signed.
 pub struct Verifier {
-    tasks: Vec<SigTask>,
+    tasks: Vec<VerifierTask>,
     body_hasher: BodyHasher,
 }
 
 impl Verifier {
-    /// Initiates a message verification process.
+    /// Initiates a message verification process by verifying the header of a
+    /// message.
     ///
     /// Returns a verifier for all signatures in the given header, or `None` if
     /// the header contains no signatures.
-    pub async fn process_header<T>(
+    pub async fn verify_header<T>(
         resolver: &T,
         headers: &HeaderFields,
         config: &Config,
@@ -354,102 +485,127 @@ impl Verifier {
     where
         T: LookupTxt + Clone + 'static,
     {
-        let verifier = HeaderVerifier::find_dkim_signatures(headers, config)?;
+        let verifier = HeaderVerifier::find_signatures(headers, config)?;
 
-        let queries = Queries::spawn(&verifier.tasks, resolver, config);
+        let verified_tasks = verifier.verify_all(resolver).await;
 
-        let tasks = verifier.verify_all(queries).await;
-
-        let mut final_tasks = vec![];
+        let mut tasks = vec![];
         let mut body_hasher = BodyHasherBuilder::new(config.forbid_partially_signed_body);
-        for task in tasks {
-            let status = task.status.unwrap();
-            if let Some(sig) = &task.sig {
-                if status == VerificationStatus::Success {
-                    let (body_len, hash_alg, canon_kind) = body_hasher_key(sig);
-                    body_hasher.register_canonicalization(body_len, hash_alg, canon_kind);
+
+        for task in verified_tasks {
+            let status = match task.status {
+                VerifyStatus::InProgress => panic!("verification unexpectedly skipped"),
+                VerifyStatus::Failed(e) => VerificationStatus::Failure(e),
+                VerifyStatus::Successful => {
+                    // For successfully verified signatures, register a body
+                    // hasher request for verification of the body hash.
+                    let sig = task.signature.as_ref().unwrap();
+                    let (body_len, hash_alg, canon_alg) = body_hasher_key(sig);
+                    body_hasher.register_canonicalization(body_len, hash_alg, canon_alg);
+
+                    // Mark this task as a (preliminary) success, later body
+                    // hash verification can still result in failure.
+                    VerificationStatus::Success
                 }
-            }
-            final_tasks.push(SigTask {
-                index: task.index,
-                sig: task.sig,
+            };
+
+            tasks.push(VerifierTask {
                 status,
-                testing: task.testing,
-                key_size: task.key_size,
+                index: task.index,
+                signature: task.signature,
+                key_record: task.key_record,
             });
         }
 
-        Some(Self {
-            tasks: final_tasks,
-            body_hasher: body_hasher.build(),
-        })
+        let body_hasher = body_hasher.build();
+
+        Some(Self { tasks, body_hasher })
     }
 
-    /// Processes a chunk of a message body.
+    /// Processes a chunk of the message body.
     ///
-    /// Note that the chunk is canonicalised and hashed, but not otherwise
-    /// retained in memory.
-    pub fn body_chunk(&mut self, chunk: &[u8]) -> BodyHasherStance {
+    /// Clients should pass the message body either whole or in chunks of
+    /// arbitrary size to this method in order to calculate the body hash (the
+    /// *bh=* tag). The returned [`BodyHasherStance`] instructs the client how
+    /// to proceed if more chunks are outstanding. Note that the given body
+    /// chunk is canonicalised and hashed, but not otherwise retained in memory.
+    ///
+    /// Remember that email message bodies generally use CRLF line endings; this
+    /// is important for correct body hash calculation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use viadkim::verifier::Verifier;
+    /// # fn f(verifier: &mut Verifier) {
+    /// let _ = verifier.process_body_chunk(b"\
+    /// Hello friend!\r
+    /// \r
+    /// How are you?\r
+    /// ");
+    /// # }
+    /// ```
+    pub fn process_body_chunk(&mut self, chunk: &[u8]) -> BodyHasherStance {
         self.body_hasher.hash_chunk(chunk)
     }
 
     /// Finishes the verification process and returns the results.
+    ///
+    /// The returned result vector is never empty.
     pub fn finish(self) -> Vec<VerificationResult> {
         let mut result = vec![];
 
         let hasher_results = self.body_hasher.finish();
 
         for task in self.tasks {
-            match task.status {
-                VerificationStatus::Failure(e) => {
-                    result.push(VerificationResult {
-                        index: task.index,
-                        signature: task.sig,
-                        status: VerificationStatus::Failure(e),
-                        testing: task.testing,
-                        key_size: task.key_size,
-                    });
-                }
+            // To obtain the final VerificationStatus, those tasks that did
+            // verify successfully, now must have their body hashes verify, too.
+            let final_status = match task.status {
                 VerificationStatus::Success => {
-                    trace!("now checking body hash for signature");
-
-                    let sig = task.sig.unwrap();
-
-                    let key = body_hasher_key(&sig);
-
-                    let status = match hasher_results.get(&key).unwrap() {
-                        Ok((h, _)) => {
-                            if h != &sig.body_hash {
-                                // downgrade status Success -> Failure!
-                                trace!("body hash mismatch: {}", util::encode_binary(h));
-                                VerificationStatus::Failure(VerifierError::BodyHashMismatch)
-                            } else {
-                                trace!("body hash matched");
-                                VerificationStatus::Success
-                            }
-                        }
-                        Err(BodyHasherError::InsufficientInput) => {
-                            // downgrade status Success -> Failure!
-                            VerificationStatus::Failure(VerifierError::InsufficientBodyLength)
-                        }
-                        Err(BodyHasherError::InputTruncated) => {
-                            // downgrade status Success -> Failure!
-                            VerificationStatus::Failure(VerifierError::Policy(PolicyError::ForbidPartiallySignedBody))
-                        }
-                    };
-
-                    result.push(VerificationResult {
-                        index: task.index,
-                        signature: Some(sig),
-                        status,
-                        testing: task.testing,
-                        key_size: task.key_size,
-                    });
+                    let sig = task.signature.as_ref()
+                        .expect("successful verification missing signature");
+                    verify_body_hash(sig, &hasher_results)
                 }
-            }
+                status @ VerificationStatus::Failure(_) => status,
+            };
+
+            result.push(VerificationResult {
+                status: final_status,
+                index: task.index,
+                signature: task.signature,
+                key_record: task.key_record,
+            });
         }
 
-        // TODO assert, document that non-empty; introduce `VerificationResults`?
         result
+    }
+}
+
+fn verify_body_hash(sig: &DkimSignature, hasher_results: &BodyHasherResults) -> VerificationStatus {
+    trace!("now checking body hash for signature");
+
+    let key = body_hasher_key(sig);
+
+    let hasher_result = hasher_results.get(&key)
+        .expect("requested body hash result not available");
+
+    match hasher_result {
+        Ok((h, _)) => {
+            if h != &sig.body_hash {
+                trace!("body hash mismatch: {}", util::encode_base64(h));
+                VerificationStatus::Failure(VerifierError::BodyHashMismatch)
+            } else {
+                trace!("body hash matched");
+                VerificationStatus::Success
+            }
+        }
+        Err(BodyHasherError::InsufficientInput) => {
+            VerificationStatus::Failure(VerifierError::InsufficientBodyLength)
+        }
+        Err(BodyHasherError::InputTruncated) => {
+            VerificationStatus::Failure(
+                VerifierError::Policy(PolicyError::ForbidPartiallySignedBody)
+            )
+        }
     }
 }

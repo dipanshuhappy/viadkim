@@ -1,3 +1,19 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 use crate::{
     crypto::{self, HashAlgorithm, VerifyingKey},
     header::HeaderFields,
@@ -15,7 +31,6 @@ pub fn perform_verification(
     sig: &DkimSignature,
     name: &str,
     value: &str,
-    signature_data: &[u8],
 ) -> Result<(), VerifierError> {
     let hash_alg = sig.algorithm.hash_algorithm();
 
@@ -29,6 +44,8 @@ pub fn perform_verification(
         name,
         &original_dkim_sig,
     );
+
+    let signature_data = &sig.signature_data;
 
     verify_signature(public_key, hash_alg, &data_hash, signature_data)
 }
@@ -114,23 +131,4 @@ mod tests {
         assert_eq!(make_original_dkim_sig(" a = 1 ; b = 2 "), " a = 1 ; b =");
         assert_eq!(make_original_dkim_sig(" a = 1 ; b ="), " a = 1 ; b =");
     }
-
-    /*
-    #[test]
-    fn make_original_canon_header_sample() {
-        let example = "v=1; a=rsa-sha256; d=example.net; s=brisbane;
-  c=simple; q=dns/txt; i=@eng.example.net;
-  h=from:to:subject:date;
-  bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=;
-  b=dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZVoG4ZHRNiYzR";
-        let example = example.replace('\n', "\r\n");
-
-        assert_eq!(
-            make_original_dkim_sig(CanonicalizationAlgorithm::Relaxed, "Dkim-Signature", &example),
-            b"dkim-signature:v=1; a=rsa-sha256; d=example.net; \
-            s=brisbane; c=simple; q=dns/txt; i=@eng.example.net; h=from:to:subject:date; \
-            bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=; b="[..]
-        );
-    }
-    */
 }

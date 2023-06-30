@@ -1,16 +1,35 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 use crate::{
     signature::{DomainName, Selector},
-    verifier::{header::VerifyingTask, VerificationStatus, Config, LookupTxt},
+    verifier::{
+        header::{VerifyStatus, VerifyTask},
+        Config, LookupTxt,
+    },
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, ErrorKind},
 };
 use tokio::{task::JoinSet, time};
 
 struct QueriesBuilder {
     // A-label form domain/selector, mapped to collection of signature header indexes
-    lookup_pairs: HashMap<(String, String), Vec<usize>>,
+    lookup_pairs: HashMap<(String, String), HashSet<usize>>,
 }
 
 impl QueriesBuilder {
@@ -24,7 +43,10 @@ impl QueriesBuilder {
         let domain = domain.to_ascii();
         let selector = selector.to_ascii();
 
-        self.lookup_pairs.entry((domain, selector)).or_default().push(index);
+        self.lookup_pairs
+            .entry((domain, selector))
+            .or_default()
+            .insert(index);
     }
 
     fn spawn_all<T>(self, resolver: &T, config: &Config) -> Queries
@@ -39,12 +61,8 @@ impl QueriesBuilder {
             let lookup_timeout = config.lookup_timeout;
 
             set.spawn(async move {
-                let result = match time::timeout(
-                    lookup_timeout,
-                    look_up_records(&resolver, domain.as_ref(), selector.as_ref()),
-                )
-                .await
-                {
+                let f = look_up_records(&resolver, domain.as_ref(), selector.as_ref());
+                let result = match time::timeout(lookup_timeout, f).await {
                     Ok(r) => r,
                     Err(e) => Err(e.into()),
                 };
@@ -57,11 +75,13 @@ impl QueriesBuilder {
     }
 }
 
+pub type QueryResult = io::Result<Vec<io::Result<String>>>;
+
 async fn look_up_records<T: LookupTxt + ?Sized>(
     resolver: &T,
     domain: &str,
     selector: &str,
-) -> io::Result<Vec<io::Result<String>>> {
+) -> QueryResult {
     let dname = format!("{selector}._domainkey.{domain}.");
 
     let txts = resolver.lookup_txt(&dname).await?;
@@ -82,25 +102,24 @@ async fn look_up_records<T: LookupTxt + ?Sized>(
 }
 
 pub struct Queries {
-    pub set: JoinSet<(Vec<usize>, io::Result<Vec<io::Result<String>>>)>,
+    pub set: JoinSet<(HashSet<usize>, QueryResult)>,
 }
 
 impl Queries {
-    pub fn spawn<T>(sigs: &[VerifyingTask], resolver: &T, config: &Config) -> Self
+    pub fn spawn<T>(tasks: &[VerifyTask], resolver: &T, config: &Config) -> Self
     where
         T: LookupTxt + Clone + 'static,
     {
         let mut builder = QueriesBuilder::new();
 
-        for task in sigs {
-            match &task.status {
-                Some(VerificationStatus::Failure(_)) => {}
-                _ => {
-                    if let Some(sig) = &task.sig {
-                        // if verification hasn't failed yet and there is a usable signature, register a lookup
-                        builder.add_lookup(&sig.domain, &sig.selector, task.index);
-                    }
-                }
+        // Register a lookup for each verification task that is still in
+        // progress.
+        for task in tasks {
+            if let VerifyStatus::InProgress = &task.status {
+                let sig = task.signature.as_ref()
+                    .expect("signature of in-progress verification task not available");
+
+                builder.add_lookup(&sig.domain, &sig.selector, task.index);
             }
         }
 
@@ -108,16 +127,109 @@ impl Queries {
     }
 }
 
-#[cfg(all(test, feature = "trust-dns-resolver"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::DkimKeyRecord;
-    use std::str::FromStr;
-    use trust_dns_resolver::TokioAsyncResolver;
+    use std::{
+        future::Future,
+        io::{self, ErrorKind},
+        pin::Pin,
+    };
+    use tokio::time::Duration;
 
+    #[derive(Clone)]
+    struct MockLookupTxt;
+
+    impl LookupTxt for MockLookupTxt {
+        type Answer = Vec<io::Result<Vec<u8>>>;
+        type Query<'a> = Pin<Box<dyn Future<Output = io::Result<Self::Answer>> + Send + 'a>>;
+
+        fn lookup_txt(&self, domain: &str) -> Self::Query<'_> {
+            let domain = domain.to_owned();
+
+            Box::pin(async move {
+                match domain.as_str() {
+                    "sel._domainkey.example.com." => {
+                        time::sleep(Duration::from_millis(300)).await;
+                        Ok(vec![
+                            Ok(b"one".to_vec()),
+                            Ok(b"two\xff\x00".to_vec()),
+                            Err(ErrorKind::UnexpectedEof.into()),
+                            Ok(b"three".to_vec()),
+                        ])
+                    }
+                    "xn--9j8hqg._domainkey.example.xn--fiqs8s." => {
+                        time::sleep(Duration::from_millis(200)).await;
+                        Ok(vec![])
+                    }
+                    "err._domainkey.example.org." => {
+                        time::sleep(Duration::from_millis(100)).await;
+                        Err(ErrorKind::TimedOut.into())
+                    }
+                    _ => unimplemented!(),
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn queries_spawn_ok() {
+        fn domain_and_selector(domain: &str, selector: &str) -> (DomainName, Selector) {
+            (
+                DomainName::new(domain).unwrap(),
+                Selector::new(selector).unwrap(),
+            )
+        }
+
+        let (d1, s1) = domain_and_selector("example.com", "sel");
+        let (d2, s2) = domain_and_selector("Example.中国", "xn--9j8hqg");
+        let (d3, s3) = domain_and_selector("eXample.xn--fiqs8s", "🎆🏮");
+        let (d4, s4) = domain_and_selector("example.org", "err");
+
+        let resolver = MockLookupTxt;
+        let config = Default::default();
+
+        let mut builder = QueriesBuilder::new();
+        builder.add_lookup(&d1, &s1, 1);
+        builder.add_lookup(&d2, &s2, 2);
+        builder.add_lookup(&d3, &s3, 3);
+        builder.add_lookup(&d4, &s4, 4);
+
+        time::pause();
+
+        let mut queries = builder.spawn_all(&resolver, &config);
+
+        let (indexes, result) = queries.set.join_next().await.unwrap().unwrap();
+        assert_eq!(indexes, HashSet::from([4]));
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::TimedOut);
+
+        let (indexes, result) = queries.set.join_next().await.unwrap().unwrap();
+        assert_eq!(indexes, HashSet::from([2, 3]));
+        assert!(result.unwrap().is_empty());
+
+        let (indexes, result) = queries.set.join_next().await.unwrap().unwrap();
+        assert_eq!(indexes, HashSet::from([1]));
+
+        let txts = result.unwrap();
+
+        assert_eq!(txts.len(), 3);
+
+        let mut iter = txts.into_iter();
+        assert_eq!(iter.next().unwrap().unwrap(), "one");
+        assert_eq!(iter.next().unwrap().unwrap_err().kind(), ErrorKind::InvalidData);
+        assert_eq!(iter.next().unwrap().unwrap_err().kind(), ErrorKind::UnexpectedEof);
+
+        time::resume();
+    }
+
+    #[cfg(feature = "trust-dns-resolver")]
     #[tokio::test]
     #[ignore = "depends on live DNS records"]
     async fn look_up_live_dkim_key_record() {
+        use crate::record::DkimKeyRecord;
+        use std::str::FromStr;
+        use trust_dns_resolver::TokioAsyncResolver;
+
         let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default());
 
         let r = look_up_records(&resolver, "gluet.ch", "ed25519.2022")

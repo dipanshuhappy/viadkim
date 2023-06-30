@@ -5,7 +5,6 @@ use tokio::{
 };
 use viadkim::{
     crypto::{HashAlgorithm, SigningKey},
-    header,
     signature::{DomainName, Selector, SignatureAlgorithm},
     signer::{SignRequest, SignResult, Signer},
 };
@@ -46,7 +45,7 @@ async fn main() {
     // request.format.tag_order = Some(Box::new(|a, b| a.cmp(b)));
     // request.format.line_width = 64.try_into().unwrap();
     // request.format.indentation = "  ".into();
-    // request.extra_tags = vec![("r".into(), "y".into())];
+    // request.ext_tags = vec![("r".into(), "y".into())];
 
     let mut msg = String::new();
     let n = io::stdin().read_to_string(&mut msg).await.unwrap();
@@ -56,14 +55,14 @@ async fn main() {
 
     let (header, body) = msg.split_once("\r\n\r\n").unwrap();
 
-    let headers = header::parse_header(header).unwrap();
+    let headers = header.parse().unwrap();
     // dbg!(&headers);
 
-    let mut signer = Signer::prepare_signing([request], headers).unwrap();
+    let mut signer = Signer::prepare_signing(headers, [request]).unwrap();
 
-    let _ = signer.body_chunk(body.as_bytes());
+    let _ = signer.process_body_chunk(body.as_bytes());
 
-    let sigs = signer.finish().await;
+    let sigs = signer.sign().await;
 
     for (_i, result) in sigs.into_iter().enumerate() {
         match result {

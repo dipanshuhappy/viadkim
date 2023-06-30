@@ -1,3 +1,19 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 //! Tag=value lists. See RFC 6376, section 3.2.
 
 use crate::{
@@ -229,6 +245,12 @@ mod tests {
             ["ab", "c\r\n\td", "e"]
         );
         assert_eq!(parse_colon_separated_value(""), [""]);
+    }
+
+    #[test]
+    fn parse_base64_value_ok() {
+        assert_eq!(parse_base64_value("").unwrap(), []);
+        assert_eq!(parse_base64_value("TQ==").unwrap(), b"M");
     }
 
     #[test]

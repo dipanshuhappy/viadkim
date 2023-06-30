@@ -1,11 +1,13 @@
 pub mod common;
 
+use std::str::FromStr;
 use viadkim::{
-    header::{self, FieldBody, FieldName, HeaderFields},
+    header::{FieldBody, FieldName, HeaderFields},
     signature::{CanonicalizationAlgorithm, DomainName, Selector, SignatureAlgorithm},
     signer::{SignRequest, Timestamp},
-    Signer,
 };
+
+// TODO idea: sign msg with opendkim, compare or verify with viadkim?
 
 #[tokio::test]
 async fn basic_sign() {
@@ -16,7 +18,7 @@ async fn basic_sign() {
     let headers = make_header_fields();
     let body = make_body();
 
-    let signing_key = common::read_signing_key_from_file("tests/keys/rsa1.pem").await.unwrap();
+    let signing_key = common::read_signing_key_from_file("tests/keys/rsa2048.pem").await.unwrap();
     let mut request = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("sel").unwrap(),
@@ -30,13 +32,9 @@ async fn basic_sign() {
     request.format.header_name = "DKiM-Signature".into();
     request.format.line_width = 64.try_into().unwrap();
     request.format.indentation = "  ".into();
-    request.format.tag_order = Some(Box::new(|a, b| a.cmp(b)));
+    request.format.tag_order = Some(Box::new(Ord::cmp));
 
-    let mut signer = Signer::prepare_signing([request], headers).unwrap();
-
-    let _ = signer.body_chunk(&body);
-
-    let sigs = signer.finish().await;
+    let sigs = common::sign(headers, &body, [request]).await;
 
     assert_eq!(sigs.len(), 1);
 
@@ -58,7 +56,7 @@ DKiM-Signature: a=rsa-sha256; b=litEQ1zgN91wbbXy4cA4KoYXMICLLq68\r
 }
 
 fn make_header_fields() -> HeaderFields {
-    let mut header_fields: Vec<_> = header::parse_header(
+    let mut header_fields: Vec<_> = HeaderFields::from_str(
         "Message-ID: <1511928109048645963@gluet.ch>
 Date: Fri, 9 Jun 2023 16:13:12 +0200
 MIME-Version: 1.0

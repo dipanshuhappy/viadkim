@@ -1,3 +1,19 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 //! Cryptographic utilities.
 //!
 //! # Pitfalls of DKIM public keys in DNS
@@ -57,7 +73,7 @@ mod rsa;
 
 pub use self::{
     ed25519::{read_ed25519_verifying_key, sign_ed25519, verify_ed25519},
-    hash::{digest_slices, CountingHasher, HashStatus, InsufficientInput},
+    hash::{digest, CountingHasher, HashStatus, InsufficientInput},
     rsa::{read_rsa_public_key, sign_rsa, verify_rsa},
 };
 
@@ -159,7 +175,7 @@ impl VerifyingKey {
 }
 
 /// The type of a key.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub enum KeyType {
     /// An RSA key.
     Rsa,
@@ -176,16 +192,30 @@ impl CanonicalStr for KeyType {
     }
 }
 
+// TODO display approriate for KeyType?
+impl Display for KeyType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(self.canonical_str())
+    }
+}
+
+impl fmt::Debug for KeyType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
 /// A hash algorithm.
 ///
-/// When feature `sha1` is enabled, this enum will have a second variant `Sha1`
-/// representing the SHA-1 hash algorithm. This variant is hidden behind a
-/// feature flag, because SHA-1 is insecure and its use is strongly discouraged.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// When **feature `pre-rfc8301`**  is enabled, this enum will have a second
+/// variant `Sha1` representing the SHA-1 hash algorithm. This variant is hidden
+/// behind a feature flag, because SHA-1 is insecure and its use is strongly
+/// discouraged.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub enum HashAlgorithm {
     /// The SHA-256 algorithm.
     Sha256,
-    #[cfg(feature = "sha1")]
+    #[cfg(feature = "pre-rfc8301")]
     /// The SHA-1 algorithm.
     Sha1,
 }
@@ -194,7 +224,7 @@ impl HashAlgorithm {
     pub fn all() -> Vec<Self> {
         vec![
             Self::Sha256,
-            #[cfg(feature = "sha1")]
+            #[cfg(feature = "pre-rfc8301")]
             Self::Sha1,
         ]
     }
@@ -204,9 +234,22 @@ impl CanonicalStr for HashAlgorithm {
     fn canonical_str(&self) -> &'static str {
         match self {
             Self::Sha256 => "sha256",
-            #[cfg(feature = "sha1")]
+            #[cfg(feature = "pre-rfc8301")]
             Self::Sha1 => "sha1",
         }
+    }
+}
+
+// TODO display approriate for HashAlgorithm?
+impl Display for HashAlgorithm {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(self.canonical_str())
+    }
+}
+
+impl fmt::Debug for HashAlgorithm {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
     }
 }
 

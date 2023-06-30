@@ -1,9 +1,25 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 use crate::crypto::{HashAlgorithm, SigningError, VerificationError};
 use rsa::{
     pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts, Pkcs1v15Sign,
     RsaPrivateKey, RsaPublicKey,
 };
-#[cfg(feature = "sha1")]
+#[cfg(feature = "pre-rfc8301")]
 use sha1::Sha1;
 use sha2::Sha256;
 
@@ -20,7 +36,9 @@ pub fn read_rsa_public_key(key_data: &[u8]) -> Result<RsaPublicKey, Verification
         .or_else(|_| RsaPublicKey::from_pkcs1_der(key_data))
         .map_err(|_| VerificationError::InvalidKey)?;
 
-    if get_public_key_size(&public_key) < 1024 {
+    let min_key_size = if cfg!(feature = "pre-rfc8301") { 512 } else { 1024 };
+
+    if get_public_key_size(&public_key) < min_key_size {
         return Err(VerificationError::InsufficientKeySize);
     }
 
@@ -37,7 +55,7 @@ pub fn verify_rsa(
         HashAlgorithm::Sha256 => {
             public_key.verify(Pkcs1v15Sign::new::<Sha256>(), msg, signature_data)
         }
-        #[cfg(feature = "sha1")]
+        #[cfg(feature = "pre-rfc8301")]
         HashAlgorithm::Sha1 => {
             public_key.verify(Pkcs1v15Sign::new::<Sha1>(), msg, signature_data)
         }
@@ -54,7 +72,7 @@ pub fn sign_rsa(
 ) -> Result<Vec<u8>, SigningError> {
     let result = match hash_alg {
         HashAlgorithm::Sha256 => private_key.sign(Pkcs1v15Sign::new::<Sha256>(), msg),
-        #[cfg(feature = "sha1")]
+        #[cfg(feature = "pre-rfc8301")]
         HashAlgorithm::Sha1 => private_key.sign(Pkcs1v15Sign::new::<Sha1>(), msg),
     };
 

@@ -1,5 +1,7 @@
+pub mod common;
+
 use trust_dns_resolver::TokioAsyncResolver;
-use viadkim::{header, verifier::{Config, VerificationStatus, Verifier}};
+use viadkim::verifier::{Config, VerificationStatus};
 
 /// Verify my signatures on a real message.
 #[tokio::test]
@@ -13,22 +15,17 @@ async fn live_verify() {
 
     let (header, body) = msg.split_once("\r\n\r\n").unwrap();
 
-    let headers = header::parse_header(header).unwrap();
+    let headers = header.parse().unwrap();
 
     let config = Config {
         fail_if_expired: false,
         ..Default::default()
     };
 
-    let mut verifier = Verifier::process_header(&resolver, &headers, &config)
-        .await
-        .unwrap();
-
-    let _ = verifier.body_chunk(body.as_bytes());
-
-    let sigs = verifier.finish();
+    let sigs = common::verify(&resolver, &headers, body.as_bytes(), &config).await;
 
     assert_eq!(sigs.len(), 2);
+
     for sig in sigs {
         assert_eq!(sig.status, VerificationStatus::Success);
     }

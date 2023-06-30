@@ -1,10 +1,7 @@
 use std::{env, process};
 use tokio::io::{self, AsyncReadExt};
 use trust_dns_resolver::TokioAsyncResolver;
-use viadkim::{
-    header,
-    verifier::{Config, Verifier},
-};
+use viadkim::verifier::{Config, Verifier};
 
 #[tokio::main]
 async fn main() {
@@ -28,7 +25,7 @@ async fn main() {
 
     let (header, body) = msg.split_once("\r\n\r\n").unwrap();
 
-    let headers = header::parse_header(header).unwrap();
+    let headers = header.parse().unwrap();
     // dbg!(&headers);
 
     let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default());
@@ -38,11 +35,11 @@ async fn main() {
         ..Default::default()
     };
 
-    let mut verifier = Verifier::process_header(&resolver, &headers, &config)
+    let mut verifier = Verifier::verify_header(&resolver, &headers, &config)
         .await
         .unwrap();
 
-    let _ = verifier.body_chunk(body.as_bytes());
+    let _ = verifier.process_body_chunk(body.as_bytes());
 
     let sigs = verifier.finish();
 

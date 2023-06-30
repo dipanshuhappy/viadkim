@@ -1,10 +1,26 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 //! DKIM signature.
 
 use crate::{
     crypto::{HashAlgorithm, KeyType},
     header::FieldName,
     tag_list::{self, TagList, TagSpec},
-    util::{self, CanonicalStr},
+    util::{Base64Debug, CanonicalStr},
 };
 use bstr::ByteSlice;
 use std::{
@@ -68,7 +84,6 @@ impl DomainName {
             return true;
         }
 
-        // Wrapped name is guaranteed to be convertible to A-label form.
         let name = self.to_ascii();
         let other = other.to_ascii();
 
@@ -82,11 +97,13 @@ impl DomainName {
 
     /// Produces the IDNA A-label (ASCII) form of this domain name.
     pub fn to_ascii(&self) -> String {
+        // Wrapped name is guaranteed to be convertible to A-label form.
         idna::domain_to_ascii(&self.0).unwrap()
     }
 
     /// Produces the IDNA U-label (Unicode) form of this domain name.
     pub fn to_unicode(&self) -> String {
+        // Wrapped name is guaranteed to be convertible to U-label form.
         idna::domain_to_unicode(&self.0).0
     }
 }
@@ -161,11 +178,13 @@ impl Selector {
 
     /// Produces the IDNA A-label (ASCII) form of this selector.
     pub fn to_ascii(&self) -> String {
+        // Wrapped name is guaranteed to be convertible to A-label form.
         idna::domain_to_ascii(&self.0).unwrap()
     }
 
     /// Produces the IDNA U-label (Unicode) form of this selector.
     pub fn to_unicode(&self) -> String {
+        // Wrapped name is guaranteed to be convertible to U-label form.
         idna::domain_to_unicode(&self.0).0
     }
 }
@@ -435,7 +454,7 @@ pub enum SignatureAlgorithm {
     RsaSha256,
     /// The *ed25519-sha256* signature algorithm.
     Ed25519Sha256,
-    #[cfg(feature = "sha1")]
+    #[cfg(feature = "pre-rfc8301")]
     /// The *rsa-sha1* signature algorithm.
     RsaSha1,
 }
@@ -447,9 +466,9 @@ impl SignatureAlgorithm {
         match (key_type, algorithm) {
             (KeyType::Rsa, HashAlgorithm::Sha256) => Some(Self::RsaSha256),
             (KeyType::Ed25519, HashAlgorithm::Sha256) => Some(Self::Ed25519Sha256),
-            #[cfg(feature = "sha1")]
+            #[cfg(feature = "pre-rfc8301")]
             (KeyType::Rsa, HashAlgorithm::Sha1) => Some(Self::RsaSha1),
-            #[cfg(feature = "sha1")]
+            #[cfg(feature = "pre-rfc8301")]
             _ => None,
         }
     }
@@ -459,7 +478,7 @@ impl SignatureAlgorithm {
         match self {
             Self::RsaSha256 => KeyType::Rsa,
             Self::Ed25519Sha256 => KeyType::Ed25519,
-            #[cfg(feature = "sha1")]
+            #[cfg(feature = "pre-rfc8301")]
             Self::RsaSha1 => KeyType::Rsa,
         }
     }
@@ -468,7 +487,7 @@ impl SignatureAlgorithm {
     pub fn hash_algorithm(self) -> HashAlgorithm {
         match self {
             Self::RsaSha256 | Self::Ed25519Sha256 => HashAlgorithm::Sha256,
-            #[cfg(feature = "sha1")]
+            #[cfg(feature = "pre-rfc8301")]
             Self::RsaSha1 => HashAlgorithm::Sha1,
         }
     }
@@ -479,7 +498,7 @@ impl CanonicalStr for SignatureAlgorithm {
         match self {
             Self::RsaSha256 => "rsa-sha256",
             Self::Ed25519Sha256 => "ed25519-sha256",
-            #[cfg(feature = "sha1")]
+            #[cfg(feature = "pre-rfc8301")]
             Self::RsaSha1 => "rsa-sha1",
         }
     }
@@ -506,7 +525,7 @@ impl FromStr for SignatureAlgorithm {
         } else if s.eq_ignore_ascii_case("ed25519-sha256") {
             Ok(Self::Ed25519Sha256)
         } else {
-            #[cfg(feature = "sha1")]
+            #[cfg(feature = "pre-rfc8301")]
             if s.eq_ignore_ascii_case("rsa-sha1") {
                 return Ok(Self::RsaSha1);
             }
@@ -628,17 +647,45 @@ impl FromStr for Canonicalization {
     }
 }
 
+/// The *DKIM-Signature* header name.
 pub const DKIM_SIGNATURE_NAME: &str = "DKIM-Signature";
 
 // TODO impl `Error`
+
+/// An error that occurs when parsing a DKIM signature for further processing.
+///
+/// The error comes with salvaged data from the failed parsing attempt, that
+/// could be reported in an *Authentication-Results* header. This data is in raw
+/// (string) form because it might fail to parse into a concrete type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DkimSignatureError {
+    /// The error kind that caused this error.
     pub kind: DkimSignatureErrorKind,
 
-    // circumstantial diagnostics:
-    pub domain: Option<DomainName>,  // header.d=   (a valid domain name)
-    pub signature_data_base64: Option<String>,  // header.b=  (the string value!)
-    // TODO more of these?
+    /// The string value of the *a=* tag, if available.
+    pub algorithm: Option<Box<str>>,
+    /// The string value of the *b=* tag, if available. Interior folding
+    /// whitespace has been stripped out.
+    pub signature_data: Option<Box<str>>,
+    /// The string value of the *d=* tag, if available.
+    pub domain: Option<Box<str>>,
+    /// The string value of the *i=* tag, if available.
+    pub identity: Option<Box<str>>,
+    /// The string value of the *s=* tag, if available.
+    pub selector: Option<Box<str>>,
+}
+
+impl DkimSignatureError {
+    pub fn new(error: DkimSignatureErrorKind) -> Self {
+        Self {
+            kind: error,
+            algorithm: None,
+            signature_data: None,
+            domain: None,
+            identity: None,
+            selector: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -649,8 +696,10 @@ pub enum DkimSignatureErrorKind {
     UnsupportedAlgorithm,
     MissingAlgorithmTag,
     MissingSignatureTag,
+    EmptySignatureTag,
     InvalidBase64,
     MissingBodyHashTag,
+    EmptyBodyHashTag,
     UnsupportedCanonicalization,
     InvalidDomain,
     MissingDomainTag,
@@ -659,6 +708,7 @@ pub enum DkimSignatureErrorKind {
     FromHeaderNotSigned,
     MissingSignedHeadersTag,
     InvalidBodyLength,
+    InvalidQueryMethod,
     QueryMethodsNotSupported,
     InvalidSelector,
     MissingSelectorTag,
@@ -681,8 +731,10 @@ impl Display for DkimSignatureErrorKind {
             Self::UnsupportedAlgorithm => write!(f, "unsupported algorithm"),
             Self::MissingAlgorithmTag => write!(f, "a= tag missing"),
             Self::MissingSignatureTag => write!(f, "b= tag missing"),
+            Self::EmptySignatureTag => write!(f, "empty b= tag"),
             Self::InvalidBase64 => write!(f, "invalid Base64 string"),
             Self::MissingBodyHashTag => write!(f, "bh= tag missing"),
+            Self::EmptyBodyHashTag => write!(f, "empty bh= tag"),
             Self::UnsupportedCanonicalization => write!(f, "unsupported canonicalization"),
             Self::InvalidDomain => write!(f, "invalid domain"),
             Self::MissingDomainTag => write!(f, "d= tag missing"),
@@ -691,7 +743,8 @@ impl Display for DkimSignatureErrorKind {
             Self::FromHeaderNotSigned => write!(f, "From header not signed"),
             Self::MissingSignedHeadersTag => write!(f, "h= tag missing"),
             Self::InvalidBodyLength => write!(f, "invalid body length"),
-            Self::QueryMethodsNotSupported => write!(f, "query method not supported"),
+            Self::InvalidQueryMethod => write!(f, "invalid query method type"),
+            Self::QueryMethodsNotSupported => write!(f, "no supported query method"),
             Self::InvalidSelector => write!(f, "invalid selector"),
             Self::MissingSelectorTag => write!(f, "s= tag missing"),
             Self::InvalidTimestamp => write!(f, "invalid timestamp"),
@@ -748,9 +801,9 @@ pub struct DkimSignature {
     pub expiration: Option<u64>,
     /// The *z=* tag.
     pub copied_headers: Box<[(FieldName, Box<[u8]>)]>,  // names may contain `;`
-    /// Additional, unknown tag name and value pairs. (For example, for RFC 6651
-    /// Reporting.)
-    pub extra_tags: Box<[(Box<str>, Box<str>)]>,
+    /// Additional, unrecognised tag name and value pairs. (For example, the RFC
+    /// 6651 extension tag *r=y*.)
+    pub ext_tags: Box<[(Box<str>, Box<str>)]>,
 }
 
 impl DkimSignature {
@@ -768,7 +821,7 @@ impl DkimSignature {
         let mut timestamp = None;
         let mut expiration = None;
         let mut copied_headers = None;
-        let mut extra_tags = vec![];
+        let mut ext_tags = vec![];
 
         for &TagSpec { name, value } in tag_list.as_ref() {
             match name {
@@ -781,7 +834,7 @@ impl DkimSignature {
                 }
                 "a" => {
                     let value = value.parse().map_err(|_| {
-                        #[cfg(not(feature = "sha1"))]
+                        #[cfg(not(feature = "pre-rfc8301"))]
                         if value.eq_ignore_ascii_case("rsa-sha1") {
                             // Note: special-case "rsa-sha1" as recognised but
                             // no longer supported (RFC 8301).
@@ -796,11 +849,19 @@ impl DkimSignature {
                     let value = tag_list::parse_base64_value(value)
                         .map_err(|_| DkimSignatureErrorKind::InvalidBase64)?;
 
+                    if value.is_empty() {
+                        return Err(DkimSignatureErrorKind::EmptySignatureTag);
+                    }
+
                     signature_data = Some(value.into());
                 }
                 "bh" => {
                     let value = tag_list::parse_base64_value(value)
                         .map_err(|_| DkimSignatureErrorKind::InvalidBase64)?;
+
+                    if value.is_empty() {
+                        return Err(DkimSignatureErrorKind::EmptyBodyHashTag);
+                    }
 
                     body_hash = Some(value.into());
                 }
@@ -863,6 +924,9 @@ impl DkimSignature {
                     let mut dns_txt_seen = false;
 
                     for s in tag_list::parse_colon_separated_value(value) {
+                        if s.is_empty() {
+                            return Err(DkimSignatureErrorKind::InvalidQueryMethod);
+                        }
                         if s.eq_ignore_ascii_case("dns/txt") {
                             dns_txt_seen = true;
                         }
@@ -902,7 +966,7 @@ impl DkimSignature {
                     copied_headers = Some(headers.into());
                 }
                 _ => {
-                    extra_tags.push((name.into(), value.into()));
+                    ext_tags.push((name.into(), value.into()));
                 }
             }
         }
@@ -932,7 +996,7 @@ impl DkimSignature {
 
         let canonicalization = canonicalization.unwrap_or_default();
         let copied_headers = copied_headers.unwrap_or_default();
-        let extra_tags = extra_tags.into();
+        let ext_tags = ext_tags.into();
 
         Ok(Self {
             algorithm,
@@ -947,7 +1011,7 @@ impl DkimSignature {
             timestamp,
             expiration,
             copied_headers,
-            extra_tags,
+            ext_tags,
         })
     }
 }
@@ -959,37 +1023,57 @@ impl FromStr for DkimSignature {
         let tag_list = match TagList::from_str(s) {
             Ok(r) => r,
             Err(_e) => {
-                return Err(DkimSignatureError {
-                    kind: DkimSignatureErrorKind::InvalidTagList,
-                    domain: None,
-                    signature_data_base64: None,
-                });
+                return Err(DkimSignatureError::new(
+                    DkimSignatureErrorKind::InvalidTagList,
+                ));
             }
         };
 
         match DkimSignature::from_tag_list(&tag_list) {
             Ok(sig) => Ok(sig),
             Err(e) => {
-                // TODO attempt to find _some_ info for diagnostics; more?
-                // TODO return decoded data (DomainName, &[u8]) or strings??
-                // eg RFC 6008 [header.b=] explicitly talks about [string] 'characters' of the DKIM-sig b= value
-                let domain = tag_list.as_ref().iter().find(|spec| spec.name == "d")
-                    .and_then(|spec| DomainName::new(spec.value).ok());
-                let signature_data_base64 = tag_list.as_ref().iter().find(|spec| spec.name == "b")
-                    .map(|spec| tag_list::strip_fws_from_tag_value(spec.value));
-                Err(DkimSignatureError {
-                    kind: e,
-                    domain,
-                    signature_data_base64,
-                })
+                // The error path. Extract some data in raw form.
+                Err(decorate_with_raw_tag_values(e, &tag_list))
             }
         }
     }
 }
 
-struct CopiedHeaders<'a>(&'a [(FieldName, Box<[u8]>)]);
+fn decorate_with_raw_tag_values(
+    error: DkimSignatureErrorKind,
+    tag_list: &TagList<'_>,
+) -> DkimSignatureError {
+    fn find_tag<'a>(tag_list: &'a TagList<'_>, name: &'static str) -> Option<&'a str> {
+        tag_list
+            .as_ref()
+            .iter()
+            .find(|spec| spec.name == name)
+            .map(|spec| spec.value)
+    }
 
-impl fmt::Debug for CopiedHeaders<'_> {
+    let algorithm = find_tag(tag_list, "a").map(From::from);
+    let domain = find_tag(tag_list, "d").map(From::from);
+    let identity = find_tag(tag_list, "i").map(From::from);
+    let selector = find_tag(tag_list, "s").map(From::from);
+
+    // Strip whitespace from *b=*, the only one of these tags that customarily
+    // contains FWS.
+    let signature_data = find_tag(tag_list, "b")
+        .map(|value| tag_list::strip_fws_from_tag_value(value).into());
+
+    DkimSignatureError {
+        kind: error,
+        algorithm,
+        signature_data,
+        domain,
+        identity,
+        selector,
+    }
+}
+
+struct CopiedHeadersDebug<'a>(&'a [(FieldName, Box<[u8]>)]);
+
+impl fmt::Debug for CopiedHeadersDebug<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_list();
         for (name, value) in self.0 {
@@ -1003,8 +1087,8 @@ impl fmt::Debug for DkimSignature {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("DkimSignature")
             .field("algorithm", &self.algorithm)
-            .field("signature_data", &util::encode_binary(&self.signature_data))
-            .field("body_hash", &util::encode_binary(&self.body_hash))
+            .field("signature_data", &Base64Debug(&self.signature_data))
+            .field("body_hash", &Base64Debug(&self.body_hash))
             .field("canonicalization", &self.canonicalization)
             .field("domain", &self.domain)
             .field("signed_headers", &self.signed_headers)
@@ -1013,8 +1097,8 @@ impl fmt::Debug for DkimSignature {
             .field("selector", &self.selector)
             .field("timestamp", &self.timestamp)
             .field("expiration", &self.expiration)
-            .field("copied_headers", &CopiedHeaders(&self.copied_headers))
-            .field("extra_tags", &self.extra_tags)
+            .field("copied_headers", &CopiedHeadersDebug(&self.copied_headers))
+            .field("ext_tags", &self.ext_tags)
             .finish()
     }
 }
@@ -1153,7 +1237,7 @@ mod tests {
                     ),
                 ]
                 .into(),
-                extra_tags: [].into(),
+                ext_tags: [].into(),
             }
         );
     }
@@ -1202,7 +1286,7 @@ mod tests {
                 timestamp: Some(1117574938),
                 expiration: Some(1118006938),
                 copied_headers: [].into(),
-                extra_tags: [
+                ext_tags: [
                     (
                         "y".into(),
                         "curious\r\n    value".into(),

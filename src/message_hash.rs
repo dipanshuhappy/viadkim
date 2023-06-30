@@ -1,3 +1,19 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 //! Computation of the message hashes.
 
 use crate::{
@@ -19,23 +35,21 @@ pub fn compute_data_hash(
     debug_assert!(dkim_sig_header_name.eq_ignore_ascii_case(DKIM_SIGNATURE_NAME));
 
     // canonicalize selected headers
-    let cheaders = canonicalize::canonicalize_headers(canon_alg, headers, selected_headers);
+    let mut cheaders = canonicalize::canonicalize_headers(canon_alg, headers, selected_headers);
 
     // canonicalize DKIM-Signature header
-    let mut csig =
-        Vec::with_capacity(DKIM_SIGNATURE_NAME.len() + formatted_dkim_sig_header_value.len() + 1);
     canonicalize::canonicalize_header(
-        &mut csig,
+        &mut cheaders,
         canon_alg,
         dkim_sig_header_name,
         formatted_dkim_sig_header_value,
     );
 
-    // produce message digest of the concatenated values
-    crypto::digest_slices(hash_alg, [cheaders, csig])
+    // produce message digest of the canonicalized value
+    crypto::digest(hash_alg, &cheaders)
 }
 
-/// The stance of the body hasher with regard to additional body content.
+/// The stance of a body hasher regarding additional body content.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[must_use]
 pub enum BodyHasherStance {
@@ -43,12 +57,12 @@ pub enum BodyHasherStance {
     // is definitely done, but `Interested` is not necessarily true, because the
     // `BodyCanonicalizer`s are stateful and may already have the final pieces.
 
-    /// When [`BodyHasher::hash_chunk`] returns `Interested`, then the client
+    /// When `Interested` is returned after digesting input, then the client
     /// should feed more inputs to the body hasher, if there are any available
     /// still.
     Interested,
 
-    /// When [`BodyHasher::hash_chunk`] returns `Done`, the body hasher requires
+    /// When `Done` is returned after digesting input, the body hasher requires
     /// no further inputs to answer all body hash requests, and the client need
     /// not feed any additional inputs to the body hasher even if there is any
     /// remaining.
@@ -204,12 +218,14 @@ pub enum BodyHasherError {
     InputTruncated,
 }
 
+pub type BodyHasherResult = Result<(Box<[u8]>, usize), BodyHasherError>;
+
 pub struct BodyHasherResults {
-    results: HashMap<BodyHasherKey, Result<(Box<[u8]>, usize), BodyHasherError>>,
+    results: HashMap<BodyHasherKey, BodyHasherResult>,
 }
 
 impl BodyHasherResults {
-    pub fn get(&self, key: &BodyHasherKey) -> Option<&Result<(Box<[u8]>, usize), BodyHasherError>> {
+    pub fn get(&self, key: &BodyHasherKey) -> Option<&BodyHasherResult> {
         self.results.get(key)
     }
 }
@@ -329,6 +345,6 @@ David
     }
 
     fn sha256_digest(msg: &[u8]) -> Box<[u8]> {
-        crypto::digest_slices(HashAlgorithm::Sha256, [msg])
+        crypto::digest(HashAlgorithm::Sha256, msg)
     }
 }

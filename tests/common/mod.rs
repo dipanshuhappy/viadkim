@@ -1,6 +1,11 @@
 use std::{future::Future, io, pin::Pin, sync::Arc};
 use tokio::fs;
-use viadkim::{crypto::SigningKey, verifier::LookupTxt};
+use viadkim::{
+    crypto::SigningKey,
+    header::HeaderFields,
+    signer::{SignRequest, SignResult, Signer, SignerError},
+    verifier::{Config, LookupTxt, VerificationResult, Verifier},
+};
 
 pub type LookupOutput = Vec<io::Result<Vec<u8>>>;
 pub type LookupFuture<'a> = Pin<Box<dyn Future<Output = io::Result<LookupOutput>> + Send + 'a>>;
@@ -36,4 +41,37 @@ pub async fn read_public_key_file_base64(file_name: &str) -> io::Result<String> 
 pub async fn read_signing_key_from_file(file_name: &str) -> io::Result<SigningKey> {
     let s = fs::read_to_string(file_name).await?;
     Ok(SigningKey::from_pkcs8_pem(&s).unwrap())
+}
+
+pub async fn sign<I>(
+    headers: HeaderFields,
+    body: &[u8],
+    requests: I,
+) -> Vec<Result<SignResult, SignerError>>
+where
+    I: IntoIterator<Item = SignRequest<SigningKey>>,
+{
+    let mut signer = Signer::prepare_signing(headers, requests).unwrap();
+
+    let _ = signer.process_body_chunk(body);
+
+    signer.sign().await
+}
+
+pub async fn verify<T>(
+    resolver: &T,
+    headers: &HeaderFields,
+    body: &[u8],
+    config: &Config,
+) -> Vec<VerificationResult>
+where
+    T: LookupTxt + Clone + 'static,
+{
+    let mut verifier = Verifier::verify_header(resolver, headers, config)
+        .await
+        .unwrap();
+
+    let _ = verifier.process_body_chunk(body);
+
+    verifier.finish()
 }

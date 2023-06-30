@@ -3,11 +3,10 @@ pub mod common;
 use common::MockLookup;
 use std::io::ErrorKind;
 use viadkim::{
-    header::{self, FieldBody, FieldName, HeaderFields},
+    header::{FieldBody, FieldName, HeaderFields},
     signature::{DomainName, Selector, SignatureAlgorithm},
     signer::{HeaderSelection, SignRequest},
     verifier::VerificationStatus,
-    Signer, Verifier,
 };
 
 // This test shows how z= can record the original, unmodified header.
@@ -21,7 +20,7 @@ async fn copied_headers_ok() {
             match name {
                 "sel._domainkey.example.com." => {
                     let base64 =
-                        common::read_public_key_file_base64("tests/keys/rsa1pub.pem").await?;
+                        common::read_public_key_file_base64("tests/keys/rsa2048pub.pem").await?;
                     Ok(vec![Ok(format!("v=DKIM1; k=rsa; p={base64}").into())])
                 }
                 _ => Err(ErrorKind::NotFound.into()),
@@ -34,7 +33,7 @@ async fn copied_headers_ok() {
 
     // First, sign the message properly
 
-    let signing_key = common::read_signing_key_from_file("tests/keys/rsa1.pem").await.unwrap();
+    let signing_key = common::read_signing_key_from_file("tests/keys/rsa2048.pem").await.unwrap();
     let mut req = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("sel").unwrap(),
@@ -49,11 +48,7 @@ async fn copied_headers_ok() {
     ]);
     req.copy_headers = true;
 
-    let mut signer = Signer::prepare_signing([req], headers).unwrap();
-
-    let _ = signer.body_chunk(&body);
-
-    let sigs = signer.finish().await;
+    let sigs = common::sign(headers, &body, [req]).await;
 
     let sig = sigs.into_iter().next().unwrap().unwrap();
 
@@ -68,17 +63,11 @@ async fn copied_headers_ok() {
         }
     });
     headers.extend(x);
-    let headers = dbg!(HeaderFields::new(headers)).unwrap();
+    let headers = HeaderFields::new(headers).unwrap();
 
     let config = Default::default();
 
-    let mut verifier = Verifier::process_header(&resolver, &headers, &config)
-        .await
-        .unwrap();
-
-    let _ = verifier.body_chunk(&body);
-
-    let sigs = verifier.finish();
+    let sigs = common::verify(&resolver, &headers, &body, &config).await;
 
     let result = sigs.into_iter().next().unwrap();
 
@@ -93,15 +82,9 @@ async fn copied_headers_ok() {
         .iter()
         .map(|(name, value)| (name.clone(), FieldBody::new(&value[..]).unwrap()));
     headers.extend(x);
-    let headers = dbg!(HeaderFields::new(headers)).unwrap();
+    let headers = HeaderFields::new(headers).unwrap();
 
-    let mut verifier = Verifier::process_header(&resolver, &headers, &config)
-        .await
-        .unwrap();
-
-    let _ = verifier.body_chunk(&body);
-
-    let sigs = verifier.finish();
+    let sigs = common::verify(&resolver, &headers, &body, &config).await;
 
     let result = sigs.into_iter().next().unwrap();
 
@@ -109,12 +92,11 @@ async fn copied_headers_ok() {
 }
 
 fn make_header_fields() -> HeaderFields {
-    header::parse_header(
-        "From: me
+    "From: me
 To: you
-Subject: how are you",
-    )
-    .unwrap()
+Subject: how are you"
+        .parse()
+        .unwrap()
 }
 
 fn make_body() -> Vec<u8> {

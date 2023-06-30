@@ -1,33 +1,37 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 use crate::crypto::HashAlgorithm;
 use sha2::Sha256;
-#[cfg(feature = "sha1")]
+#[cfg(feature = "pre-rfc8301")]
 use sha1::Sha1;
 
-pub fn digest_slices<I, T>(
-    hash_alg: HashAlgorithm,
-    slices: I,
-) -> Box<[u8]>
-where
-    I: IntoIterator<Item = T>,
-    T: AsRef<[u8]>,
-{
+/// Computes the hash of the given bytes.
+pub fn digest(hash_alg: HashAlgorithm, bytes: impl AsRef<[u8]>) -> Box<[u8]> {
     use digest::Digest;
 
     match hash_alg {
         HashAlgorithm::Sha256 => {
-            let mut hasher = Sha256::new();
-            for bytes in slices {
-                hasher.update(bytes.as_ref());
-            }
-            Box::from(&hasher.finalize()[..])
+            let hash = Sha256::digest(bytes);
+            Box::from(&hash[..])
         }
-        #[cfg(feature = "sha1")]
+        #[cfg(feature = "pre-rfc8301")]
         HashAlgorithm::Sha1 => {
-            let mut hasher = Sha1::new();
-            for bytes in slices {
-                hasher.update(bytes.as_ref());
-            }
-            Box::from(&hasher.finalize()[..])
+            let hash = Sha1::digest(bytes);
+            Box::from(&hash[..])
         }
     }
 }
@@ -35,12 +39,16 @@ where
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InsufficientInput;
 
+/// Status returned by a hasher after digesting bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HashStatus {
-    AllConsumed,  // input was digested entirely
-    Truncated,  // input was only partially digested, part of it was ignored
+    /// The given input was digested in entirety.
+    AllConsumed,
+    /// The given input was only partially digested, part of it was ignored.
+    Truncated,
 }
 
+/// A hasher that keeps track of how many bytes it has digested.
 pub struct CountingHasher {
     digest: Box<dyn digest::DynDigest + Send>,
     length: Option<usize>,
@@ -51,7 +59,7 @@ impl CountingHasher {
     pub fn new(hash_alg: HashAlgorithm, length: Option<usize>) -> Self {
         let digest: Box<dyn digest::DynDigest + Send> = match hash_alg {
             HashAlgorithm::Sha256 => Box::new(Sha256::default()),
-            #[cfg(feature = "sha1")]
+            #[cfg(feature = "pre-rfc8301")]
             HashAlgorithm::Sha1 => Box::new(Sha1::default()),
         };
 
@@ -147,7 +155,7 @@ mod tests {
         assert_eq!(len, 0);
     }
 
-    #[cfg(feature = "sha1")]
+    #[cfg(feature = "pre-rfc8301")]
     #[test]
     fn counting_hasher_rfc_examples_sha1() {
         // See §3.4.3:

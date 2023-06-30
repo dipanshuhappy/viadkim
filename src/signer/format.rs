@@ -1,3 +1,19 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 use crate::{
     header::FieldName,
     quoted_printable,
@@ -5,6 +21,7 @@ use crate::{
         Canonicalization, CanonicalizationAlgorithm, DkimSignature, DomainName, Identity, Selector,
         SignatureAlgorithm,
     },
+    signer::OutputFormat,
     util::{self, CanonicalStr},
 };
 use std::{cmp::Ordering, fmt::Write, iter};
@@ -25,7 +42,7 @@ pub struct UnsignedDkimSignature {
     pub timestamp: Option<u64>,
     pub expiration: Option<u64>,
     pub copied_headers: Box<[(FieldName, Box<[u8]>)]>,
-    pub extra_tags: Box<[(Box<str>, Box<str>)]>,
+    pub ext_tags: Box<[(Box<str>, Box<str>)]>,
 }
 
 impl UnsignedDkimSignature {
@@ -33,13 +50,10 @@ impl UnsignedDkimSignature {
     /// index where the *b=* tag value is to be inserted.
     pub fn format_without_signature(
         &self,
-        header_name: &str,
-        width: usize,
-        indentation: &str,
+        format: &OutputFormat,
         b_tag_len: usize,
-        tag_order: Option<&(dyn Fn(&str, &str) -> Ordering + Send + Sync)>,
     ) -> (String, usize) {
-        format_without_signature(self, header_name, width, indentation, b_tag_len, tag_order)
+        format_without_signature(self, format, b_tag_len)
     }
 
     pub fn into_signature(self, signature_data: Box<[u8]>) -> DkimSignature {
@@ -56,7 +70,7 @@ impl UnsignedDkimSignature {
             timestamp: self.timestamp,
             expiration: self.expiration,
             copied_headers: self.copied_headers,
-            extra_tags: self.extra_tags,
+            ext_tags: self.ext_tags,
         }
     }
 }
@@ -103,7 +117,7 @@ fn compute_tag_names<'a>(
         names.push("z");
     }
 
-    for (t, _) in sig.extra_tags.iter() {
+    for (t, _) in sig.ext_tags.iter() {
         names.push(t);
     }
 
@@ -123,21 +137,21 @@ struct Fmt<'a> {
 
 fn format_without_signature(
     sig: &UnsignedDkimSignature,
-    header_name: &str,
-    width: usize,
-    indent: &str,
+    format: &OutputFormat,
     b_tag_len: usize,
-    tag_order: Option<&(dyn Fn(&str, &str) -> Ordering + Send + Sync)>,
 ) -> (String, usize) {
+    let width = format.line_width.into();
+    let indent = &format.indentation;
+
     // First, find out which tags will be included in which order in the
     // generated header.
-    let tag_names = compute_tag_names(sig, tag_order);
+    let tag_names = compute_tag_names(sig, format.tag_order.as_deref());
     let last_index = tag_names.len().checked_sub(1).unwrap();
 
     // The starting point of cursor `i` is just past header name + ':'.
     // The insertion index will be used when inserting the signature value.
     let mut output = String::new();
-    let mut i = header_name.len() + 1;
+    let mut i = format.header_name.len() + 1;
     let mut insertion_i: Option<usize> = None;
 
     let out = &mut output;
@@ -166,7 +180,7 @@ fn format_without_signature(
             "z" => format_tag_z(out, i, fmt, &sig.copied_headers),
             tag_name => {
                 let (t, v) = sig
-                    .extra_tags
+                    .ext_tags
                     .iter()
                     .find(|(t, _)| t.as_ref() == tag_name)
                     .unwrap();
@@ -205,9 +219,8 @@ fn format_tag_i(out: &mut String, i: &mut usize, fmt: Fmt<'_>, identity: &Identi
     let Identity { local_part, domain_part } = identity;
     let d = domain_part.to_unicode();
 
-    // TODO or qp-encode entire identity string (incl domain)?
     let identity = match local_part {
-        Some(x) => format!("{}@{d}", quoted_printable::encode(x.as_bytes(), false)),
+        Some(l) => format!("{}@{d}", quoted_printable::encode(l.as_bytes(), false)),
         None => format!("@{d}"),
     };
 
@@ -294,7 +307,7 @@ fn format_tag_h(out: &mut String, i: &mut usize, fmt: Fmt<'_>, value: &[FieldNam
 fn format_tag_bh(out: &mut String, i: &mut usize, fmt: Fmt<'_>, value: &[u8]) {
     let Fmt { last, .. } = fmt;
 
-    let value = util::encode_binary(value);
+    let value = util::encode_base64(value);
 
     // "bh=" + 1 char (we prefer at least one additional char behind =)
     let taglen = 4;
@@ -473,7 +486,7 @@ pub fn insert_signature_data(
     // TODO revisit Fmt struct
     let fmt = Fmt { width: line_width, indent, last: false /*notused*/};
 
-    let s = util::encode_binary(signature_data);
+    let s = util::encode_base64(signature_data);
     // note s contains only ASCII now
 
     let formatted_header_pre = &formatted_header[..insertion_index];

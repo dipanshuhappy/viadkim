@@ -1,11 +1,27 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 use crate::{
     crypto::{self, HashAlgorithm, SigningKey},
     header::{FieldName, HeaderFields},
     message_hash::{self, BodyHasherError, BodyHasherResults},
     signer::{
+        self,
         format::{self, UnsignedDkimSignature},
-        request::{self, BodyLength, HeaderSelection, OutputFormat, SignRequest, Timestamp},
-        SignResult, SignerError,
+        BodyLength, HeaderSelection, OutputFormat, SignRequest, SignResult, SignerError, Timestamp,
     },
 };
 use std::{collections::HashSet, time::SystemTime};
@@ -24,12 +40,15 @@ where
 
     // calculate body hash
 
-    let body_length = request::convert_body_length(request.body_length)
+    let body_length = signer::convert_body_length(request.body_length)
         .expect("unsupported integer conversion");
     let hash_alg = algorithm.hash_algorithm();
     let key = (body_length, hash_alg, canonicalization.body);
 
-    let (body_hash, final_len) = match hasher_results.get(&key).unwrap() {
+    let hasher_result = hasher_results.get(&key)
+        .expect("requested body hash result not available");
+
+    let (body_hash, final_len) = match hasher_result {
         Ok((h, final_len)) => (h.clone(), *final_len),
         Err(BodyHasherError::InsufficientInput) => {
             return Err(SignerError::InsufficientBodyLength);
@@ -88,8 +107,7 @@ where
         [].into()
     };
 
-    // TODO validate
-    let extra_tags = request.extra_tags.into_iter()
+    let ext_tags = request.ext_tags.into_iter()
         .map(|(k, v)| (k.into_boxed_str(), v.into_boxed_str()))
         .collect();
 
@@ -108,7 +126,7 @@ where
         timestamp,
         expiration,
         copied_headers,
-        extra_tags,
+        ext_tags,
     };
 
     produce_signature(
@@ -120,8 +138,8 @@ where
 }
 
 fn select_signed_headers(headers: &HeaderFields) -> Vec<&FieldName> {
-    let def: HashSet<_> = request::default_signed_headers().into_iter().collect();
-    request::select_headers(headers, move |name| def.contains(name)).collect()
+    let def: HashSet<_> = signer::default_signed_headers().into_iter().collect();
+    signer::select_headers(headers, move |name| def.contains(name)).collect()
 }
 
 async fn produce_signature(
@@ -130,16 +148,11 @@ async fn produce_signature(
     format: &OutputFormat,
     headers: &HeaderFields,
 ) -> Result<SignResult, SignerError> {
-    // TODO cleanup
-    let header_name = &format.header_name;
-    let line_width = format.line_width.into();
-    let indentation = &format.indentation;
-    let tag_order = format.tag_order.as_deref();
-
     let b_len = estimate_b_tag_length(signing_key);
 
-    let (mut formatted_header_value, insertion_index) =
-        sig.format_without_signature(header_name, line_width, indentation, b_len, tag_order);
+    let (mut formatted_header_value, insertion_index) = sig.format_without_signature(format, b_len);
+
+    let header_name = &format.header_name;
 
     let algorithm = sig.algorithm;
     let hash_alg = algorithm.hash_algorithm();
@@ -176,14 +189,14 @@ async fn produce_signature(
         insertion_index,
         header_name,
         &sig.signature_data[..],
-        line_width,
-        indentation,
+        format.line_width.into(),
+        &format.indentation,
     );
 
     Ok(SignResult {
-        signature: sig,
         header_name: header_name.into(),
         header_value: formatted_header_value,
+        signature: sig,
     })
 }
 
@@ -197,14 +210,13 @@ fn prepare_copied_headers(
     headers: &HeaderFields,
     selected_headers: &[FieldName],
 ) -> Vec<(FieldName, Box<[u8]>)> {
-    // TODO inefficient
-    let mut v = vec![];
+    let mut result = vec![];
     for (name, value) in headers.as_ref() {
         if selected_headers.contains(name) {
-            v.push((name.clone(), value.as_ref().into()));
+            result.push((name.clone(), value.as_ref().into()));
         }
     }
-    v
+    result
 }
 
 fn estimate_b_tag_length(signing_key: &SigningKey) -> usize {

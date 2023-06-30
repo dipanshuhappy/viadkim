@@ -3,11 +3,10 @@ pub mod common;
 use common::MockLookup;
 use std::{collections::HashSet, io::ErrorKind};
 use viadkim::{
-    header::{self, FieldName, HeaderFields},
+    header::{FieldName, HeaderFields},
     signature::{DomainName, Selector, SignatureAlgorithm},
     signer::{self, HeaderSelection, SignRequest},
     verifier::VerificationStatus,
-    Signer, Verifier,
 };
 
 /// Example from RFC 6376, appendix A.2, with public key in RSAPublicKey format.
@@ -19,13 +18,9 @@ async fn rfc_appendix_a_rsa() {
     let headers = make_header_fields();
     let config = Default::default();
 
-    let mut verifier = Verifier::process_header(&resolver, &headers, &config).await.unwrap();
-
     let body = make_body();
 
-    let _ = verifier.body_chunk(&body);
-
-    let sigs = verifier.finish();
+    let sigs = common::verify(&resolver, &headers, &body, &config).await;
 
     let result = sigs.into_iter().next().unwrap();
 
@@ -41,13 +36,9 @@ async fn rfc_appendix_a_spki() {
     let headers = make_header_fields();
     let config = Default::default();
 
-    let mut verifier = Verifier::process_header(&resolver, &headers, &config).await.unwrap();
-
     let body = make_body();
 
-    let _ = verifier.body_chunk(&body);
-
-    let sigs = verifier.finish();
+    let sigs = common::verify(&resolver, &headers, &body, &config).await;
 
     let result = sigs.into_iter().next().unwrap();
 
@@ -83,11 +74,7 @@ async fn sign_roundtrip() {
 
     req.header_selection = HeaderSelection::Manual(signed_headers.cloned().collect());
 
-    let mut signer = Signer::prepare_signing([req], headers).unwrap();
-
-    let _ = signer.body_chunk(&body);
-
-    let sigs = signer.finish().await;
+    let sigs = common::sign(headers, &body, [req]).await;
 
     let sign_result = sigs.into_iter().next().unwrap().unwrap();
     tracing::trace!("{}", sign_result.format_header());
@@ -99,11 +86,7 @@ async fn sign_roundtrip() {
     headers.insert(0, sign_result.to_header_field());
     let headers = HeaderFields::new(headers).unwrap();
 
-    let mut verifier = Verifier::process_header(&resolver, &headers, &config).await.unwrap();
-
-    let _ = verifier.body_chunk(&body);
-
-    let sigs = verifier.finish();
+    let sigs = common::verify(&resolver, &headers, &body, &config).await;
 
     let result = sigs.into_iter().next().unwrap();
 
@@ -142,8 +125,7 @@ fn make_resolver_spki() -> MockLookup {
 
 // Note RFC 6376, erratum 4926!
 fn make_header_fields() -> HeaderFields {
-    header::parse_header(
-        "\
+    "\
 DKIM-Signature: v=1; a=rsa-sha256; s=brisbane; d=example.com;
       c=simple/simple; q=dns/txt; i=joe@football.example.com;
       h=Received : From : To : Subject : Date : Message-ID;
@@ -160,8 +142,8 @@ To: Suzie Q <suzie@shopping.example.net>
 Subject: Is dinner ready?
 Date: Fri, 11 Jul 2003 21:00:37 -0700 (PDT)
 Message-ID: <20030712040037.46341.5F8J@football.example.com>
-",
-    )
+"
+    .parse()
     .unwrap()
 }
 

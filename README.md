@@ -1,10 +1,10 @@
 # viadkim
 
-### 🚧
+🚧
 
-### *in development*
+***in development***
 
-### 🏗
+🏗
 
 <br>
 
@@ -22,6 +22,8 @@ specification and related documents. The design objectives sketched below are
 used to guide development.
 
 ## Design objectives
+
+TODO
 
 The goal of viadkim is to provide a free DKIM library suitable for long-lived
 mail server processes, with strong RFC conformance guarantees.
@@ -46,10 +48,9 @@ Finally, care is taken to strictly **conform to RFC 6376**, including RFC
 updates and known errata. Support for internationalised email was already
 mentioned, but also, for example, more recent recommendations for supported
 signature algorithms such as addition of *ed25519-sha256* and retirement of
-*rsa-sha1* are adopted (see [RFC 8301]).
+*rsa-sha1* are adopted.
 
 [RFC 6376]: https://www.rfc-editor.org/rfc/rfc6376
-[RFC 8301]: https://www.rfc-editor.org/rfc/rfc8301
 
 ## Usage
 
@@ -64,8 +65,12 @@ DNS resolution is abstracted in trait `LookupTxt`.
 A lookup implementation of the `LookupTxt` trait can be made available for the
 Trust-DNS async resolver by enabling feature `trust-dns-resolver`.
 
-The optional feature `sha1` enables support for the insecure, historic SHA-1
-algorithm in the API. Use of this feature is strongly discouraged.
+The feature `pre-rfc8301` reverts cryptographic algorithm and key usage back to
+before [RFC 8301]: it allows use of RSA key sizes below 1024 bits, and enables
+support for the insecure, historic SHA-1 algorithm. Use of this feature is
+strongly discouraged.
+
+[RFC 8301]: https://www.rfc-editor.org/rfc/rfc8301
 
 ## Examples
 
@@ -125,4 +130,4 @@ WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
-this program. If not, see https://www.gnu.org/licenses/.
+this program. If not, see <https://www.gnu.org/licenses/>.

@@ -1,6 +1,23 @@
+// viadkim – implementation of the DKIM specification
+// Copyright © 2022–2023 David Bürgin <dbuergin@gluet.ch>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+
 //! Representation of email header data.
 //!
-//! See RFC 5322, section 2.2.
+//! See RFC 5322, section 2.2. The obsolete syntax (eg header field names with
+//! trailing whitespace before the colon) is not supported.
 //!
 //! API documentation in viadkim uses the term *header* in various places.
 //! *Header* is an ambiguous term: it can refer to the entire header section
@@ -17,63 +34,29 @@ use std::{
     fmt::{self, Display, Formatter},
     hash::{Hash, Hasher},
     mem,
+    str::FromStr,
     vec::IntoIter,
 };
 
+/// A pair of header field name and body.
 pub type HeaderField = (FieldName, FieldBody);
 
+/// An error that occurs when parsing a header field.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HeaderFieldError;
 
-/// A collection of header fields that can be used for DKIM processing.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HeaderFields(Vec<HeaderField>);
-
-impl HeaderFields {
-    pub fn new(value: impl Into<Vec<HeaderField>>) -> Result<Self, HeaderFieldError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(HeaderFieldError);
-        }
-        Ok(Self(value))
-    }
-
-    pub fn from_vec(value: Vec<(String, Vec<u8>)>) -> Result<Self, HeaderFieldError> {
-        let value: Vec<_> = value
-            .into_iter()
-            .map(|(name, value)| {
-                let name = FieldName::new(name)?;
-                let body = FieldBody::new(value)?;
-                Ok((name, body))
-            })
-            .collect::<Result<_, _>>()?;
-        Self::new(value)
+// TODO
+impl Display for HeaderFieldError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "header field error")
     }
 }
 
-impl AsRef<[HeaderField]> for HeaderFields {
-    fn as_ref(&self) -> &[HeaderField] {
-        &self.0
-    }
-}
+impl Error for HeaderFieldError {}
 
-impl From<HeaderFields> for Vec<HeaderField> {
-    fn from(header_fields: HeaderFields) -> Self {
-        header_fields.0
-    }
-}
+// Our `FieldName` allows RFC 5322 header field names (minus the obsolete
+// syntax); but note that ‘;’ is not practical in DKIM.
 
-impl IntoIterator for HeaderFields {
-    type Item = HeaderField;
-    type IntoIter = IntoIter<Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
-
-// Our `FieldName` allows RFC 5322 header field names; but note that ‘;’ is not
-// practical in DKIM.
 /// A header field name.
 ///
 /// # Examples
@@ -200,52 +183,106 @@ impl fmt::Debug for FieldBody {
     }
 }
 
-/// Parses a header block into header fields. Convenience function.
-///
-/// This function uses [`str::lines`] to split the input into lines, and
-/// therefore accepts both LF and CRLF line breaks.
-///
-/// # Examples
-///
-/// ```
-/// # use viadkim::header::parse_header;
-/// let headers = parse_header("\
-/// Date: x
-/// From: me <me@example.com>
-/// To: you <you@example.com>
-/// Subject: hi
-///   dear!
-/// ").unwrap();
-/// assert_eq!(headers.as_ref().len(), 4);
-/// ```
-pub fn parse_header(s: &str) -> Result<HeaderFields, HeaderFieldError> {
-    let mut lines = s.lines();
+/// A collection of header fields that can be used for DKIM processing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HeaderFields(Vec<HeaderField>);
 
-    let first_line = lines.next()
-        .filter(|l| !is_continuation_line(l))
-        .ok_or(HeaderFieldError)?;
-
-    let (mut name, mut value) = split_header_field(first_line)?;
-
-    let mut headers = vec![];
-
-    for line in lines {
-        if is_continuation_line(line) {
-            value.extend(b"\r\n");
-            value.extend(line.bytes());
-        } else {
-            let (next_name, next_value) = split_header_field(line)?;
-            let name = mem::replace(&mut name, next_name);
-            let value = mem::replace(&mut value, next_value);
-            let value = FieldBody::new(value)?;
-            headers.push((name, value));
+impl HeaderFields {
+    pub fn new(value: impl Into<Vec<HeaderField>>) -> Result<Self, HeaderFieldError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(HeaderFieldError);
         }
+        Ok(Self(value))
     }
 
-    let value = FieldBody::new(value)?;
-    headers.push((name, value));
+    pub fn from_vec(value: Vec<(String, Vec<u8>)>) -> Result<Self, HeaderFieldError> {
+        let value: Vec<_> = value
+            .into_iter()
+            .map(|(name, value)| {
+                let name = FieldName::new(name)?;
+                let body = FieldBody::new(value)?;
+                Ok((name, body))
+            })
+            .collect::<Result<_, _>>()?;
+        Self::new(value)
+    }
+}
 
-    HeaderFields::new(headers)
+impl AsRef<[HeaderField]> for HeaderFields {
+    fn as_ref(&self) -> &[HeaderField] {
+        &self.0
+    }
+}
+
+impl From<HeaderFields> for Vec<HeaderField> {
+    fn from(header_fields: HeaderFields) -> Self {
+        header_fields.0
+    }
+}
+
+impl IntoIterator for HeaderFields {
+    type Item = HeaderField;
+    type IntoIter = IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl FromStr for HeaderFields {
+    type Err = HeaderFieldError;
+
+    /// Parses a header block into header fields.
+    ///
+    /// This function uses [`str::lines`] to split the input into lines, and
+    /// therefore accepts both LF and CRLF line breaks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use viadkim::header::HeaderFields;
+    ///
+    /// let headers: HeaderFields = "\
+    /// Date: Thu, 22 Jun 2023 09:29:22 +0200
+    /// From: me <me@example.com>
+    /// To: you <you@example.com>
+    /// Subject: hi
+    ///   dear!
+    /// ".parse()?;
+    ///
+    /// assert_eq!(headers.as_ref().len(), 4);
+    /// # Ok::<_, viadkim::header::HeaderFieldError>(())
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut lines = s.lines();
+
+        let first_line = lines.next()
+            .filter(|l| !is_continuation_line(l))
+            .ok_or(HeaderFieldError)?;
+
+        let (mut name, mut value) = split_header_field(first_line)?;
+
+        let mut headers = vec![];
+
+        for line in lines {
+            if is_continuation_line(line) {
+                value.extend(b"\r\n");
+                value.extend(line.bytes());
+            } else {
+                let (next_name, next_value) = split_header_field(line)?;
+                let name = mem::replace(&mut name, next_name);
+                let value = mem::replace(&mut value, next_value);
+                let value = FieldBody::new(value)?;
+                headers.push((name, value));
+            }
+        }
+
+        let value = FieldBody::new(value)?;
+        headers.push((name, value));
+
+        Self::new(headers)
+    }
 }
 
 fn is_continuation_line(s: &str) -> bool {
@@ -302,6 +339,10 @@ impl Display for HeaderValidationError {
 impl Error for HeaderValidationError {}
 
 /// Validates the given header according to RFC 5322, 3.6.
+///
+/// This only validates the cardinality requirements in the table at the end of
+/// section 3.6, not the format of the headers. The note regarding the *Sender*
+/// header – ‘MUST occur with multi-address *from*’ – is not checked.
 pub fn validate_rfc5322(header: impl AsRef<[HeaderField]>) -> Result<(), HeaderValidationError> {
     fn count_names(header: &[HeaderField], name: &str) -> usize {
         header.iter().filter(|(n, _)| *n == name).count()
@@ -342,8 +383,6 @@ pub fn validate_rfc5322(header: impl AsRef<[HeaderField]>) -> Result<(), HeaderV
     if count_names(header, "Subject") > 1 {
         return Err(HeaderValidationError::MultipleSubject);
     }
-
-    // TODO additional checks? eg MUST have Sender if multiple mailboxes in From
 
     Ok(())
 }
