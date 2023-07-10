@@ -17,14 +17,14 @@
 use crate::{
     crypto::{HashAlgorithm, KeyType, VerifyingKey},
     header::HeaderFields,
-    record::{DkimKeyRecord, DkimKeyRecordParseError, SelectorFlag},
+    record::{DkimKeyRecord, DkimKeyRecordError, SelectorFlag},
     signature::{
         DkimSignature, DkimSignatureError, DkimSignatureErrorKind, DomainName, Identity,
         DKIM_SIGNATURE_NAME,
     },
     verifier::{
         query::{Queries, QueryResult},
-        verify, Config, LookupTxt, PolicyError, VerifierError,
+        verify, Config, LookupTxt, PolicyError, VerificationError,
     },
 };
 use std::{
@@ -39,7 +39,7 @@ use tracing::trace;
 #[derive(Debug, PartialEq)]
 pub enum VerifyStatus {
     InProgress,
-    Failed(VerifierError),
+    Failed(VerificationError),
     Successful,
 }
 
@@ -54,10 +54,9 @@ pub struct VerifyTask {
 }
 
 impl VerifyTask {
-    fn failed(index: usize, error: VerifierError) -> Self {
-        let status = VerifyStatus::Failed(error);
+    fn failed(index: usize, error: VerificationError) -> Self {
         Self {
-            status,
+            status: VerifyStatus::Failed(error),
             index,
             signature: None,
             header_name: None,
@@ -100,7 +99,7 @@ impl<'a, 'b> HeaderVerifier<'a, 'b> {
             let value = match str::from_utf8(value.as_ref()) {
                 Ok(s) => s,
                 Err(_) => {
-                    let error = VerifierError::DkimSignatureHeaderFormat(DkimSignatureError::new(
+                    let error = VerificationError::DkimSignatureFormat(DkimSignatureError::new(
                         DkimSignatureErrorKind::Utf8Encoding,
                     ));
                     tasks.push(VerifyTask::failed(index, error));
@@ -111,7 +110,7 @@ impl<'a, 'b> HeaderVerifier<'a, 'b> {
             let sig = match DkimSignature::from_str(value) {
                 Ok(sig) => sig,
                 Err(e) => {
-                    let error = VerifierError::DkimSignatureHeaderFormat(e);
+                    let error = VerificationError::DkimSignatureFormat(e);
                     tasks.push(VerifyTask::failed(index, error));
                     continue;
                 }
@@ -165,36 +164,36 @@ impl<'a, 'b> HeaderVerifier<'a, 'b> {
     }
 }
 
-fn validate_signature(sig: &DkimSignature, config: &Config) -> Result<(), VerifierError> {
+fn validate_signature(sig: &DkimSignature, config: &Config) -> Result<(), VerificationError> {
     for h in &config.required_signed_headers {
         if !sig.signed_headers.contains(h) {
-            return Err(VerifierError::Policy(PolicyError::RequiredHeadersNotSigned));
+            return Err(VerificationError::Policy(PolicyError::RequiredHeadersNotSigned));
         }
     }
 
     if let Some(len) = sig.body_length {
         if usize::try_from(len).is_err() {
             // signed body length too large to undergo DKIM processing on this platform
-            return Err(VerifierError::Overflow);
+            return Err(VerificationError::Overflow);
         }
     }
 
     let current_t = config.current_timestamp();
 
-    if config.fail_if_expired {
+    if !config.allow_expired {
         if let Some(t) = sig.expiration {
             let delta = config.time_tolerance.as_secs();
             if current_t >= t.saturating_add(delta) {
-                return Err(VerifierError::Policy(PolicyError::SignatureExpired));
+                return Err(VerificationError::Policy(PolicyError::SignatureExpired));
             }
         }
     }
 
-    if config.fail_if_in_future {
+    if !config.allow_timestamp_in_future {
         if let Some(t) = sig.timestamp {
             let delta = config.time_tolerance.as_secs();
             if t.saturating_sub(delta) > current_t {
-                return Err(VerifierError::Policy(PolicyError::TimestampInFuture));
+                return Err(VerificationError::Policy(PolicyError::TimestampInFuture));
             }
         }
     }
@@ -202,29 +201,31 @@ fn validate_signature(sig: &DkimSignature, config: &Config) -> Result<(), Verifi
     #[cfg(feature = "pre-rfc8301")]
     if !config.allow_sha1 {
         if let HashAlgorithm::Sha1 = sig.algorithm.hash_algorithm() {
-            return Err(VerifierError::Policy(PolicyError::DisallowedSha1Hash));
+            return Err(VerificationError::Policy(PolicyError::Sha1HashAlgorithm));
         }
     }
 
     Ok(())
 }
 
-
 // This enum ensures that we parse a `DkimKeyRecord` from an
 // `io::Result<String>` at most once, even if used by multiple signatures.
 enum CachedDkimKeyRecord {
     Unparsed(io::Result<String>),
-    Parsed(Result<Arc<DkimKeyRecord>, DkimKeyRecordParseError>),
+    Parsed(Result<Arc<DkimKeyRecord>, DkimKeyRecordError>),
 }
 
 impl CachedDkimKeyRecord {
-    fn parse_and_cache(&mut self) -> &Result<Arc<DkimKeyRecord>, DkimKeyRecordParseError> {
+    fn parse_and_cache(&mut self) -> &Result<Arc<DkimKeyRecord>, DkimKeyRecordError> {
         if let Self::Unparsed(s) = self {
             let r = match s {
                 Ok(s) => DkimKeyRecord::from_str(s),
                 Err(e) => {
-                    trace!("syntax error in DNS record: {e}");
-                    Err(DkimKeyRecordParseError::RecordSyntax)
+                    // The per-record I/O error is mapped to an opaque
+                    // `DkimKeyRecordError` variant, details are only exposed in
+                    // the trace log.
+                    trace!("cannot use DNS record: {e}");
+                    Err(DkimKeyRecordError::RecordFormat)
                 }
             };
             *self = Self::Parsed(r.map(Arc::new));
@@ -239,29 +240,34 @@ impl CachedDkimKeyRecord {
 
 fn map_lookup_result_to_key_records(
     lookup_result: QueryResult,
-) -> Result<Vec<CachedDkimKeyRecord>, VerifierError> {
+) -> Result<Vec<CachedDkimKeyRecord>, VerificationError> {
     match lookup_result {
         Ok(txts) if txts.is_empty() => {
             trace!("no key record");
-            Err(VerifierError::NoKeyFound)
+            Err(VerificationError::NoKeyFound)
         }
-        Ok(txts) => Ok(txts.into_iter().map(CachedDkimKeyRecord::Unparsed).collect()),
+        Ok(txts) => Ok(txts
+            .into_iter()
+            .map(CachedDkimKeyRecord::Unparsed)
+            .collect()),
         Err(e) => match e.kind() {
             ErrorKind::NotFound => {
                 trace!("no key record");
-                Err(VerifierError::NoKeyFound)
+                Err(VerificationError::NoKeyFound)
             }
             ErrorKind::InvalidInput => {
                 trace!("invalid key record domain name");
-                Err(VerifierError::InvalidKeyDomain)
+                Err(VerificationError::InvalidKeyDomain)
             }
             ErrorKind::TimedOut => {
                 trace!("key record lookup timed out");
-                Err(VerifierError::KeyLookupTimeout)
+                Err(VerificationError::Timeout)
             }
             _ => {
+                // Other I/O errors are mapped to `VerifierError::KeyLookup`,
+                // further details are only exposed in the trace log.
                 trace!("could not look up key record: {e}");
-                Err(VerifierError::KeyLookup)
+                Err(VerificationError::KeyLookup)
             }
         },
     }
@@ -271,50 +277,42 @@ fn verify_task(
     task: &mut VerifyTask,
     headers: &HeaderFields,
     config: &Config,
-    lookup_result: &mut Result<Vec<CachedDkimKeyRecord>, VerifierError>,
+    lookup_result: &mut Result<Vec<CachedDkimKeyRecord>, VerificationError>,
 ) {
     trace!("processing DKIM-Signature");
 
     let sig = task.signature.as_ref().unwrap();
 
     let cached_records = match lookup_result {
-        Ok(recs) => recs,
+        Ok(r) => r,
         Err(e) => {
             task.status = VerifyStatus::Failed(e.clone());
             return;
         }
     };
 
-    let hash_alg = sig.algorithm.hash_algorithm();
-    let key_type = sig.algorithm.key_type();
+    let (key_type, hash_alg) = sig.algorithm.into();
 
     assert!(!cached_records.is_empty());
 
     let key_records = cached_records.iter_mut().map(|r| r.parse_and_cache());
 
-    // step through all (usually only 1, but more possible) key records
-    // if we can successfully complete verification with one record, then that
-    // is the winner; else the last failing record will be reported
+    // Step through all (usually only one, but more possible) key records. If we
+    // can successfully complete verification with one record, then that will be
+    // the result; else the last failing record will be reported.
+
     for (i, key_record) in key_records.enumerate() {
         trace!("trying verification using DKIM key record {}", i + 1);
 
         let key_record = match key_record {
             Ok(key_record) => key_record,
             Err(e) => {
-                // conflate syntax errors, but propagate error about revoked key
-                let error = match e {
-                    DkimKeyRecordParseError::RevokedKey => VerifierError::KeyRevoked,
-                    _ => VerifierError::KeyRecordSyntax,
-                };
-                // record last error seen
-                task.status = VerifyStatus::Failed(error);
+                trace!("unusable DKIM public key record: {e}");
+                task.status = VerifyStatus::Failed(VerificationError::KeyRecordFormat(*e));
                 task.key_record = None;
                 continue;
             }
         };
-
-        // from here on a parsed DkimKeyRecord is available and can be returned
-        // (if this is the final evaluated record)
 
         if let Err(e) = validate_key_record(
             key_type,
@@ -323,7 +321,6 @@ fn verify_task(
             &sig.domain,
             sig.identity.as_ref(),
         ) {
-            // record last error seen
             task.status = VerifyStatus::Failed(e);
             task.key_record = Some(key_record.clone());
             continue;
@@ -331,20 +328,16 @@ fn verify_task(
 
         let key_data = &key_record.key_data;
 
-        let public_key = match VerifyingKey::from_key_data(key_type, key_data) {
+        let key = match VerifyingKey::from_key_data(key_type, key_data) {
             Ok(k) => k,
             Err(e) => {
-                // record last error seen
-                task.status = VerifyStatus::Failed(
-                    VerifierError::VerificationFailure(e),
-                );
+                task.status = VerifyStatus::Failed(VerificationError::VerificationFailure(e));
                 task.key_record = Some(key_record.clone());
                 continue;
             }
         };
 
-        if let Err(e) = validate_verifying_key(&public_key, config) {
-            // record last error seen
+        if let Err(e) = validate_verifying_key(&key, config) {
             task.status = VerifyStatus::Failed(e);
             task.key_record = Some(key_record.clone());
             continue;
@@ -355,13 +348,12 @@ fn verify_task(
         let name = task.header_name.as_ref().unwrap();
         let value = task.header_value.as_ref().unwrap();
 
-        match verify::perform_verification(headers, &public_key, sig, name, value) {
+        match verify::perform_verification(headers, &key, sig, name, value) {
             Ok(()) => {
                 task.status = VerifyStatus::Successful;
                 break;
             }
             Err(e) => {
-                // record last error seen
                 task.status = VerifyStatus::Failed(e);
             }
         }
@@ -371,27 +363,32 @@ fn verify_task(
 fn validate_key_record(
     key_type: KeyType,
     hash_alg: HashAlgorithm,
-    rec: &DkimKeyRecord,
+    record: &DkimKeyRecord,
     domain: &DomainName,
     identity: Option<&Identity>,
-) -> Result<(), VerifierError> {
-    if rec.key_type != key_type {
+) -> Result<(), VerificationError> {
+    if record.key_type != key_type {
         trace!("wrong public key type");
-        return Err(VerifierError::WrongKeyType);
+        return Err(VerificationError::WrongKeyType);
     }
 
-    if !rec.hash_algorithms.contains(&hash_alg) {
+    if record.key_data.is_empty() {
+        trace!("key revoked");
+        return Err(VerificationError::KeyRevoked);
+    }
+
+    if !record.hash_algorithms.contains(&hash_alg) {
         trace!("disallowed hash algorithm");
-        return Err(VerifierError::DisallowedHashAlgorithm);
+        return Err(VerificationError::DisallowedHashAlgorithm);
     }
 
-    if rec.flags.contains(&SelectorFlag::NoSubdomains) {
+    if record.flags.contains(&SelectorFlag::NoSubdomains) {
         // assumes that parsing already validated that i= domain is subdomain of d=
         // need to compare A-label form (case-normalised) strings
         if let Some(identity) = identity {
             if domain.to_ascii() != identity.domain_part.to_ascii() {
                 trace!("domain mismatch");
-                return Err(VerifierError::DomainMismatch);
+                return Err(VerificationError::DomainMismatch);
             }
         }
     }
@@ -402,12 +399,12 @@ fn validate_key_record(
 fn validate_verifying_key(
     verifying_key: &VerifyingKey,
     config: &Config,
-) -> Result<(), VerifierError> {
+) -> Result<(), VerificationError> {
     if let Some(n) = verifying_key.key_size() {
         // Note the hard minimum key size already enforced when constructing an
         // `RsaPublicKey`.
         if n < config.min_key_bits {
-            return Err(VerifierError::Policy(PolicyError::KeyTooSmall));
+            return Err(VerificationError::Policy(PolicyError::KeyTooSmall));
         }
     }
     Ok(())

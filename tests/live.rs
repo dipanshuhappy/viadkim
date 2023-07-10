@@ -18,7 +18,7 @@ async fn live_verify() {
     let headers = header.parse().unwrap();
 
     let config = Config {
-        fail_if_expired: false,
+        allow_expired: true,
         ..Default::default()
     };
 

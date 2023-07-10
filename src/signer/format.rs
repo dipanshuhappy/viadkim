@@ -19,7 +19,7 @@ use crate::{
     quoted_printable,
     signature::{
         Canonicalization, CanonicalizationAlgorithm, DkimSignature, DomainName, Identity, Selector,
-        SignatureAlgorithm,
+        SigningAlgorithm,
     },
     signer::OutputFormat,
     util::{self, CanonicalStr},
@@ -29,9 +29,8 @@ use std::{cmp::Ordering, fmt::Write, iter};
 // Note: Careful with offsets: formatting works with *characters*, not bytes!
 
 /// DKIM signature data that does not yet have a cryptographic signature.
-#[derive(Clone, Eq, PartialEq)]
 pub struct UnsignedDkimSignature {
-    pub algorithm: SignatureAlgorithm,
+    pub algorithm: SigningAlgorithm,
     pub body_hash: Box<[u8]>,
     pub canonicalization: Canonicalization,
     pub domain: DomainName,
@@ -227,7 +226,7 @@ fn format_tag_i(out: &mut String, i: &mut usize, fmt: Fmt<'_>, identity: &Identi
     format_tag(out, i, fmt, "i", &identity);
 }
 
-fn format_tag_a(out: &mut String, i: &mut usize, fmt: Fmt<'_>, algorithm: SignatureAlgorithm) {
+fn format_tag_a(out: &mut String, i: &mut usize, fmt: Fmt<'_>, algorithm: SigningAlgorithm) {
     format_tag(out, i, fmt, "a", algorithm.canonical_str());
 }
 
@@ -343,13 +342,17 @@ fn format_tag_name_b(
 
     *insertion_i = Some(out.len());
 
-    // where in the line are we now given the estimated b= tag value length?
+    // Where in the line are we now given the estimated b= tag value length?
     let chunk_len = width.saturating_sub(indent.len()).max(1);
     let remaining_len = width.saturating_sub(*i);
     if b_tag_len <= remaining_len {
         *i += b_tag_len;
     } else {
-        *i = (b_tag_len - remaining_len) % chunk_len + indent.len();
+        let mut final_chunk_len = (b_tag_len - remaining_len) % chunk_len;
+        if final_chunk_len == 0 {
+            final_chunk_len = chunk_len;
+        }
+        *i = final_chunk_len + indent.len();
     }
 
     if !last {

@@ -12,11 +12,11 @@ use viadkim::{
     quoted_printable,
     record::DkimKeyRecord,
     signature::{
-        CanonicalizationAlgorithm, DkimSignature, DomainName, Selector, SignatureAlgorithm,
+        CanonicalizationAlgorithm, DkimSignature, DomainName, Selector, SigningAlgorithm,
         DKIM_SIGNATURE_NAME,
     },
-    signer::{HeaderSelection, SignRequest, Signer},
-    verifier::{LookupTxt, VerificationStatus, Verifier},
+    signer::{HeaderSelection, SignRequest},
+    verifier::{LookupTxt, VerificationStatus},
 };
 
 // These tests exercise the low-level APIs, signing and verifying without going
@@ -34,8 +34,8 @@ async fn low_level_sign() {
 
     // canonicalize body and hash it
     let mut bc = BodyCanonicalizer::new(canon_alg);
-    let mut cbody = bc.canon_chunk(&body[..]);
-    cbody.extend(bc.finish_canon());
+    let mut cbody = bc.canonicalize_chunk(&body[..]);
+    cbody.extend(bc.finish());
     let body_hash1 = crypto::digest(hash_alg, &cbody);
 
     let body_hash = viadkim::encode_base64(body_hash1);
@@ -79,17 +79,13 @@ async fn low_level_sign() {
 
     sig_value.push_str(&s);
 
-    eprintln!("{sig_name}:{sig_value}");
-
-    let mut headers: Vec<_> = headers.into();
-    headers.insert(
-        0,
+    let headers = common::prepend_header_field(
         (
             FieldName::new(sig_name).unwrap(),
             FieldBody::new(sig_value.as_bytes()).unwrap(),
         ),
+        headers,
     );
-    let headers = HeaderFields::new(headers).unwrap();
 
     // afterwards verify with high-level Verifier to see if works
 
@@ -108,13 +104,7 @@ async fn low_level_sign() {
 
     let config = Default::default();
 
-    let mut verifier = Verifier::verify_header(&resolver, &headers, &config)
-        .await
-        .unwrap();
-
-    let _ = verifier.process_body_chunk(&body);
-
-    let sigs = verifier.finish();
+    let sigs = common::verify(&resolver, &headers, &body, &config).await;
 
     let result = sigs.into_iter().next().unwrap();
 
@@ -136,7 +126,7 @@ async fn low_level_verify() {
     let mut req = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("sel1").unwrap(),
-        SignatureAlgorithm::RsaSha256,
+        SigningAlgorithm::RsaSha256,
         signing_key,
     );
 
@@ -145,17 +135,11 @@ async fn low_level_verify() {
         FieldName::new("To").unwrap(),
     ]);
 
-    let mut signer = Signer::prepare_signing(headers, [req]).unwrap();
-
-    let _ = signer.process_body_chunk(&body);
-
-    let sigs = signer.sign().await;
+    let sigs = common::sign(headers, &body, [req]).await;
 
     let sig = sigs.into_iter().next().unwrap().unwrap();
 
-    let mut headers: Vec<_> = make_header_fields().into();
-    headers.insert(0, sig.to_header_field());
-    let headers = HeaderFields::new(headers).unwrap();
+    let headers = common::prepend_header_field(sig.to_header_field(), make_header_fields());
 
     // now verify using low-level APIs
 
@@ -179,8 +163,8 @@ async fn low_level_verify() {
     // calculate body hash
 
     let mut bc = BodyCanonicalizer::new(canon.body);
-    let mut cbody = bc.canon_chunk(&body[..]);
-    cbody.extend(bc.finish_canon());
+    let mut cbody = bc.canonicalize_chunk(&body[..]);
+    cbody.extend(bc.finish());
     let body_hash = crypto::digest(hash_alg, &cbody);
 
     assert_eq!(body_hash, sig.body_hash);
@@ -200,8 +184,8 @@ async fn low_level_verify() {
         })
     });
 
-    let selector = sig.selector.as_ref();
-    let domain = sig.domain.as_ref();
+    let selector = sig.selector.to_ascii();
+    let domain = sig.domain.to_ascii();
     let domain = format!("{selector}._domainkey.{domain}.");
     let result = resolver.lookup_txt(&domain).await.unwrap();
 
@@ -228,10 +212,7 @@ async fn low_level_verify() {
 
     // verify hash
 
-    assert_eq!(
-        crypto::verify_rsa(hash_alg, &pubkey, &data_hash, &sig.signature_data),
-        Ok(())
-    );
+    assert!(crypto::verify_rsa(&pubkey, hash_alg, &data_hash, &sig.signature_data).is_ok());
 }
 
 fn make_header_fields() -> HeaderFields {

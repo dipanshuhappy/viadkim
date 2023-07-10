@@ -31,7 +31,7 @@ async fn main() {
     let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default());
 
     let config = Config {
-        fail_if_expired: false,
+        allow_expired: true,
         ..Default::default()
     };
 

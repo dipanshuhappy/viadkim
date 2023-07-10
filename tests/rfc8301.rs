@@ -1,12 +1,12 @@
 pub mod common;
 
 use common::MockLookup;
-use std::{io::ErrorKind, iter, str::FromStr};
+use std::{io::ErrorKind, str::FromStr};
 use viadkim::{
     header::{FieldBody, FieldName, HeaderFields},
-    signature::{DomainName, Selector, SignatureAlgorithm},
+    signature::{DomainName, Selector, SigningAlgorithm},
     signer::SignRequest,
-    verifier::{VerificationStatus, VerifierError},
+    verifier::{VerificationError, VerificationStatus},
 };
 
 // These tests check behaviour with and without feature pre-rfc8301.
@@ -27,7 +27,7 @@ async fn key_512_basic() {
     let request = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("sel").unwrap(),
-        SignatureAlgorithm::RsaSha256,
+        SigningAlgorithm::RsaSha256,
         signing_key,
     );
 
@@ -35,10 +35,7 @@ async fn key_512_basic() {
 
     let sig = sigs.into_iter().next().unwrap().unwrap();
 
-    let headers: Vec<_> = iter::once(sig.to_header_field())
-        .chain(make_header_fields())
-        .collect();
-    let headers = HeaderFields::new(headers).unwrap();
+    let headers = common::prepend_header_field(sig.to_header_field(), make_header_fields());
 
     let resolver = MockLookup::new(|name| {
         Box::pin(async move {
@@ -61,7 +58,7 @@ async fn key_512_basic() {
 
     assert_eq!(
         result.status,
-        VerificationStatus::Failure(VerifierError::Policy(PolicyError::KeyTooSmall))
+        VerificationStatus::Failure(VerificationError::Policy(PolicyError::KeyTooSmall))
     );
 
     let config = Config {
@@ -79,7 +76,7 @@ async fn key_512_basic() {
 #[cfg(not(feature = "pre-rfc8301"))]
 #[tokio::test]
 async fn key_512_basic() {
-    use viadkim::crypto::VerificationError;
+    use viadkim::crypto;
 
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -92,7 +89,7 @@ async fn key_512_basic() {
     let request = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("sel").unwrap(),
-        SignatureAlgorithm::RsaSha256,
+        SigningAlgorithm::RsaSha256,
         signing_key,
     );
 
@@ -100,10 +97,7 @@ async fn key_512_basic() {
 
     let sig = sigs.into_iter().next().unwrap().unwrap();
 
-    let headers: Vec<_> = iter::once(sig.to_header_field())
-        .chain(make_header_fields())
-        .collect();
-    let headers = HeaderFields::new(headers).unwrap();
+    let headers = common::prepend_header_field(sig.to_header_field(), make_header_fields());
 
     let resolver = MockLookup::new(|name| {
         Box::pin(async move {
@@ -126,8 +120,8 @@ async fn key_512_basic() {
 
     assert_eq!(
         result.status,
-        VerificationStatus::Failure(VerifierError::VerificationFailure(
-            VerificationError::InsufficientKeySize
+        VerificationStatus::Failure(VerificationError::VerificationFailure(
+            crypto::VerificationError::InsufficientKeySize
         ))
     );
 }
@@ -148,7 +142,7 @@ async fn sha1_basic() {
     let request = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("sel").unwrap(),
-        SignatureAlgorithm::RsaSha1,
+        SigningAlgorithm::RsaSha1,
         signing_key,
     );
 
@@ -156,10 +150,7 @@ async fn sha1_basic() {
 
     let sig = sigs.into_iter().next().unwrap().unwrap();
 
-    let headers: Vec<_> = iter::once(sig.to_header_field())
-        .chain(make_header_fields())
-        .collect();
-    let headers = HeaderFields::new(headers).unwrap();
+    let headers = common::prepend_header_field(sig.to_header_field(), make_header_fields());
 
     let resolver = MockLookup::new(|name| {
         Box::pin(async move {
@@ -182,7 +173,7 @@ async fn sha1_basic() {
 
     assert_eq!(
         result.status,
-        VerificationStatus::Failure(VerifierError::Policy(PolicyError::DisallowedSha1Hash))
+        VerificationStatus::Failure(VerificationError::Policy(PolicyError::Sha1HashAlgorithm))
     );
 
     let config = Config {
@@ -215,10 +206,8 @@ async fn sha1_basic() {
 \tczZsfxAdaIgp63QvBsxm/Q=",
     )
     .unwrap();
-    let headers: Vec<_> = iter::once((name, value))
-        .chain(make_header_fields())
-        .collect();
-    let headers = HeaderFields::new(headers).unwrap();
+
+    let headers = common::prepend_header_field((name, value), make_header_fields());
 
     let resolver = MockLookup::new(|name| {
         Box::pin(async move {
@@ -240,7 +229,7 @@ async fn sha1_basic() {
     let result = sigs.into_iter().next().unwrap();
 
     match result.status {
-        VerificationStatus::Failure(VerifierError::DkimSignatureHeaderFormat(e)) => {
+        VerificationStatus::Failure(VerificationError::DkimSignatureFormat(e)) => {
             assert_eq!(e.kind, DkimSignatureErrorKind::HistoricAlgorithm);
         }
         _ => panic!(),

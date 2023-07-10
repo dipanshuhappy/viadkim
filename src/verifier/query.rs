@@ -82,14 +82,18 @@ async fn look_up_records<T: LookupTxt + ?Sized>(
     domain: &str,
     selector: &str,
 ) -> QueryResult {
+    // Note the trailing dot: only absolute queries.
     let dname = format!("{selector}._domainkey.{domain}.");
 
     let txts = resolver.lookup_txt(&dname).await?;
 
-    // §6.1.2: ‘If the query for the public key returns multiple key records,
-    // the Verifier can choose one of the key records or may cycle through the
-    // key records […]. The order of the key records is unspecified.’ As a
-    // courtesy we do try at most three keys.
+    // §3.6.2.2: ‘TXT RRs MUST be unique for a particular selector name; […] if
+    // there are multiple records in an RRset, the results are undefined.’
+    // However, note §6.1.2: ‘If the query for the public key returns multiple
+    // key records, the Verifier can choose one of the key records or may cycle
+    // through the key records […]. The order of the key records is
+    // unspecified.’ So, as a courtesy we do try at most three keys.
+
     let result = txts
         .into_iter()
         .take(3)

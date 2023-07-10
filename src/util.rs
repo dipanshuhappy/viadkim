@@ -15,7 +15,10 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 
 use base64ct::{Base64, Encoding};
-use std::fmt::{self, Formatter};
+use std::{
+    error::Error,
+    fmt::{self, Display, Formatter},
+};
 
 /// A trait for entities that have a canonical string representation in the DKIM
 /// specification.
@@ -30,10 +33,18 @@ pub fn encode_base64<T: AsRef<[u8]>>(input: T) -> String {
 }
 
 /// An error that occurs when decoding Base64-encoded data.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Base64Error;
 
-/// Decodes binary data in a Base64-encoded string.
+impl Display for Base64Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "failed to decode Base64 data")
+    }
+}
+
+impl Error for Base64Error {}
+
+/// Decodes binary data from a Base64-encoded string.
 pub fn decode_base64(input: &str) -> Result<Vec<u8>, Base64Error> {
     Base64::decode_vec(input).map_err(|_| Base64Error)
 }
@@ -51,7 +62,7 @@ impl fmt::Debug for Base64Debug<'_> {
         // which looks unpleasant. This implementation introduces a wrapping
         // `Base64(…)` pseudo-tuple, and `Empty` for empty slices.
 
-        struct Base64DebugHelper<'a>(pub &'a str);
+        struct Base64DebugHelper<'a>(&'a str);
 
         impl fmt::Debug for Base64DebugHelper<'_> {
             fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {

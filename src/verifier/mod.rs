@@ -24,13 +24,13 @@ mod verify;
 pub use lookup::LookupTxt;
 
 use crate::{
-    crypto::VerificationError,
+    crypto,
     header::{FieldName, HeaderFields},
     message_hash::{
-        body_hasher_key, BodyHasher, BodyHasherBuilder, BodyHasherError, BodyHasherResults,
+        body_hasher_key, BodyHasher, BodyHasherBuilder, BodyHashError, BodyHashResults,
         BodyHasherStance,
     },
-    record::DkimKeyRecord,
+    record::{DkimKeyRecord, DkimKeyRecordError},
     signature::{DkimSignature, DkimSignatureError, DkimSignatureErrorKind},
     util::{self, CanonicalStr},
     verifier::header::{HeaderVerifier, VerifyStatus},
@@ -43,20 +43,26 @@ use std::{
 };
 use tracing::trace;
 
-/// Configuration for a verifier process.
+/// Configuration for a verifier.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     /// The maximum duration of public key record lookups. When this duration is
-    /// exceeded evaluation fails (temporary error).
+    /// exceeded evaluation fails with a temporary error.
+    ///
+    /// The default is 10 seconds.
     pub lookup_timeout: Duration,
 
     /// Only validate at most this number of signatures, any extra signatures
     /// are ignored.
+    ///
+    /// The default is 10.
     pub max_signatures: usize,
 
     /// If given required headers are not signed in a DKIM signature, the
-    /// signature will not validate. Note that the header `From` is always
+    /// signature will not validate. Note that the header *From* is always
     /// required by the RFC independent of this configuration setting.
+    ///
+    /// By default, no additional headers are required to be signed.
     pub required_signed_headers: Vec<FieldName>,
 
     /// Minimum acceptable key size in bits. When the key size of an RSA public
@@ -64,8 +70,10 @@ pub struct Config {
     ///
     /// Note that there is a compile-time hard lower bound of acceptable key
     /// sizes, which will lead to failure to validate independent of this
-    /// setting. By default, the minimum key size is 1024; if feature
-    /// `pre-rfc8301` is enabled, the minimum key size is 512.
+    /// setting. By default, the absolute minimum key size is 1024; if feature
+    /// `pre-rfc8301` is enabled, the absolute minimum key size is 512.
+    ///
+    /// The default is 1024 bits.
     pub min_key_bits: usize,
 
     /// When this flag is set, signatures using the SHA-1 hash algorithm are
@@ -74,26 +82,39 @@ pub struct Config {
     /// Note that the SHA-1 hash algorithm is only available when feature
     /// `pre-rfc8301` is enabled. This setting is only effective when that
     /// feature is enabled.
+    ///
+    /// The default is false.
     pub allow_sha1: bool,
 
-    /// If a DKIM signature has the l= tag, and the body length given in this
+    /// If a DKIM signature has the *l=* tag, and the body length given in this
     /// tag is less than the actual message body length, the signature will not
     /// validate. In other words, signatures that cover only part of the message
     /// body are not accepted.
-    pub forbid_partially_signed_body: bool,
+    ///
+    /// The default is false.
+    pub forbid_unsigned_content: bool,
 
-    /// When this flag is set, an expired DKIM signature (x=) will not validate.
-    pub fail_if_expired: bool,
+    /// When this flag is set, an expired DKIM signature (*x=*) is acceptable.
+    ///
+    /// The default is false.
+    pub allow_expired: bool,
 
     /// When this flag is set, a DKIM signature with a timestamp in the future
-    /// (t=) will not validate.
-    pub fail_if_in_future: bool,
+    /// (*t=*) is acceptable.
+    ///
+    /// The default is false.
+    pub allow_timestamp_in_future: bool,
 
     /// Tolerance applied to time values when checking signature expiration or
     /// timestamp validity, to allow for clock drift. Resolution is in seconds.
+    ///
+    /// The default is 30 seconds.
     pub time_tolerance: Duration,
 
-    /// The `SystemTime` value to use as the instant ‘now’.
+    /// The `SystemTime` value to use as the instant ‘now’. If `None`, the value
+    /// of `SystemTime::now()` is used for the instant ‘now’.
+    ///
+    /// The default is `None`.
     pub fixed_system_time: Option<SystemTime>,
 }
 
@@ -115,42 +136,17 @@ impl Default for Config {
             required_signed_headers: vec![],
             min_key_bits: 1024,
             allow_sha1: false,
-            forbid_partially_signed_body: false,
-            fail_if_expired: true,
-            fail_if_in_future: true,
+            forbid_unsigned_content: false,
+            allow_expired: false,
+            allow_timestamp_in_future: false,
             time_tolerance: Duration::from_secs(30),
             fixed_system_time: None,
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum PolicyError {
-    RequiredHeadersNotSigned,
-    ForbidPartiallySignedBody,
-    SignatureExpired,
-    TimestampInFuture,
-    DisallowedSha1Hash,
-    KeyTooSmall,
-}
-
-impl Display for PolicyError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RequiredHeadersNotSigned => write!(f, "headers required to be signed were not signed"),
-            Self::ForbidPartiallySignedBody => write!(f, "partial body signing not acceptable"),
-            Self::SignatureExpired => write!(f, "signature expired"),
-            Self::TimestampInFuture => write!(f, "timestamp in future"),
-            Self::DisallowedSha1Hash => write!(f, "hash algorithm SHA-1 not acceptable"),
-            Self::KeyTooSmall => write!(f, "public key size too small"),
-        }
-    }
-}
-
-impl Error for PolicyError {}
-
 /// A verification result arrived at for some DKIM signature header.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct VerificationResult {
     /// The verification status.
     pub status: VerificationStatus,
@@ -173,133 +169,197 @@ pub struct VerificationResult {
 /// This type encodes the three DKIM output states described in RFC 6376,
 /// section 3.9: `Success` corresponds to *SUCCESS*, `Failure` corresponds to
 /// both *PERMFAIL* and *TEMPFAIL*.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum VerificationStatus {
     /// A *SUCCESS* result status.
     Success,
     /// A *PERMFAIL* or *TEMPFAIL* result status, with failure cause attached.
-    Failure(VerifierError),
+    Failure(VerificationError),
 }
 
 impl VerificationStatus {
-    // TODO revisit
     /// Converts this verification status to an RFC 8601 DKIM result.
     pub fn to_dkim_auth_result(&self) -> DkimAuthResult {
-        use VerifierError::*;
+        use VerificationError::*;
 
         match self {
             VerificationStatus::Success => DkimAuthResult::Pass,
             VerificationStatus::Failure(error) => match error {
-                WrongKeyType
-                | KeyRecordSyntax
-                | KeyRevoked
-                | DisallowedHashAlgorithm
-                | DomainMismatch
-                | InsufficientBodyLength
-                | InvalidKeyDomain
-                | NoKeyFound => DkimAuthResult::Permerror,
-                BodyHashMismatch => DkimAuthResult::Fail,
-                KeyLookupTimeout | KeyLookup => DkimAuthResult::Temperror,
-                DkimSignatureHeaderFormat(error) => match &error.kind {
-                    DkimSignatureErrorKind::MissingVersionTag
-                    | DkimSignatureErrorKind::HistoricAlgorithm
+                DkimSignatureFormat(error) => match error.kind {
+                    DkimSignatureErrorKind::Utf8Encoding
+                    | DkimSignatureErrorKind::TagListFormat
+                    | DkimSignatureErrorKind::IncompatibleVersion
+                    | DkimSignatureErrorKind::UnsupportedAlgorithm
+                    | DkimSignatureErrorKind::InvalidBase64
+                    | DkimSignatureErrorKind::UnsupportedCanonicalization
+                    | DkimSignatureErrorKind::InvalidDomain
+                    | DkimSignatureErrorKind::InvalidSignedHeaderName
+                    | DkimSignatureErrorKind::InvalidIdentity
+                    | DkimSignatureErrorKind::InvalidBodyLength
+                    | DkimSignatureErrorKind::InvalidQueryMethod
+                    | DkimSignatureErrorKind::NoSupportedQueryMethods
+                    | DkimSignatureErrorKind::InvalidSelector
+                    | DkimSignatureErrorKind::InvalidTimestamp
+                    | DkimSignatureErrorKind::InvalidExpiration
+                    | DkimSignatureErrorKind::InvalidCopiedHeaderField => DkimAuthResult::Neutral,
+                    DkimSignatureErrorKind::HistoricAlgorithm
+                    | DkimSignatureErrorKind::EmptySignatureTag
+                    | DkimSignatureErrorKind::EmptyBodyHashTag
+                    | DkimSignatureErrorKind::EmptySignedHeadersTag
+                    | DkimSignatureErrorKind::FromHeaderNotSigned
+                    | DkimSignatureErrorKind::MissingVersionTag
                     | DkimSignatureErrorKind::MissingAlgorithmTag
                     | DkimSignatureErrorKind::MissingSignatureTag
-                    | DkimSignatureErrorKind::EmptySignatureTag
                     | DkimSignatureErrorKind::MissingBodyHashTag
-                    | DkimSignatureErrorKind::EmptyBodyHashTag
                     | DkimSignatureErrorKind::MissingDomainTag
-                    | DkimSignatureErrorKind::SignedHeadersEmpty
-                    | DkimSignatureErrorKind::FromHeaderNotSigned
                     | DkimSignatureErrorKind::MissingSignedHeadersTag
                     | DkimSignatureErrorKind::MissingSelectorTag
                     | DkimSignatureErrorKind::DomainMismatch
                     | DkimSignatureErrorKind::ExpirationNotAfterTimestamp => DkimAuthResult::Permerror,
-                    DkimSignatureErrorKind::UnsupportedVersion
-                    | DkimSignatureErrorKind::UnsupportedAlgorithm
-                    | DkimSignatureErrorKind::UnsupportedCanonicalization
-                    | DkimSignatureErrorKind::InvalidQueryMethod
-                    | DkimSignatureErrorKind::QueryMethodsNotSupported
-                    | DkimSignatureErrorKind::InvalidIdentity
-                    | DkimSignatureErrorKind::InvalidDomain
-                    | DkimSignatureErrorKind::InvalidBodyLength
-                    | DkimSignatureErrorKind::InvalidSelector
-                    | DkimSignatureErrorKind::InvalidTimestamp
-                    | DkimSignatureErrorKind::InvalidExpiration
-                    | DkimSignatureErrorKind::InvalidBase64
-                    | DkimSignatureErrorKind::InvalidSignedHeaderName
-                    | DkimSignatureErrorKind::InvalidCopiedHeaderField
-                    | DkimSignatureErrorKind::Utf8Encoding
-                    | DkimSignatureErrorKind::InvalidTagList => DkimAuthResult::Neutral,
+                },
+                Overflow => DkimAuthResult::Neutral,
+                NoKeyFound
+                | InvalidKeyDomain
+                | WrongKeyType
+                | KeyRevoked
+                | DisallowedHashAlgorithm
+                | DomainMismatch
+                | InsufficientContent => DkimAuthResult::Permerror,
+                Timeout | KeyLookup => DkimAuthResult::Temperror,
+                KeyRecordFormat(error) => match error {
+                    DkimKeyRecordError::RecordFormat
+                    | DkimKeyRecordError::TagListFormat
+                    | DkimKeyRecordError::IncompatibleVersion
+                    | DkimKeyRecordError::InvalidHashAlgorithm
+                    | DkimKeyRecordError::NoSupportedHashAlgorithms
+                    | DkimKeyRecordError::UnsupportedKeyType
+                    | DkimKeyRecordError::InvalidQuotedPrintable
+                    | DkimKeyRecordError::InvalidBase64
+                    | DkimKeyRecordError::InvalidServiceType
+                    | DkimKeyRecordError::NoSupportedServiceTypes
+                    | DkimKeyRecordError::InvalidFlag => DkimAuthResult::Neutral,
+                    DkimKeyRecordError::MisplacedVersionTag
+                    | DkimKeyRecordError::MissingKeyTag => DkimAuthResult::Permerror,
                 },
                 VerificationFailure(error) => match error {
-                    VerificationError::InvalidKey
-                    | VerificationError::InsufficientKeySize
-                    | VerificationError::InvalidSignature => DkimAuthResult::Permerror,
-                    VerificationError::VerificationFailure => DkimAuthResult::Fail,
+                    crypto::VerificationError::InvalidKey
+                    | crypto::VerificationError::InsufficientKeySize => DkimAuthResult::Permerror,
+                    crypto::VerificationError::VerificationFailure => DkimAuthResult::Fail,
                 },
+                BodyHashMismatch => DkimAuthResult::Fail,
                 Policy(_) => DkimAuthResult::Policy,
-                Overflow => DkimAuthResult::Neutral,
             },
         }
     }
 }
 
-// TODO rename, not a verifier error but a verification error (but conflicts with different VerificationError)
-/// An error that occurs when using a verifier.
-#[derive(Clone, Debug, PartialEq)]
-pub enum VerifierError {
-    DkimSignatureHeaderFormat(DkimSignatureError),  // TODO rename DkimSignatureFormat
-    WrongKeyType,
-    KeyRecordSyntax,  // TODO rename KeyRecordFormat
-    KeyRevoked,
-    DisallowedHashAlgorithm,
-    DomainMismatch,
-    VerificationFailure(VerificationError),
-    BodyHashMismatch,
-    InsufficientBodyLength,
-    NoKeyFound,
-    InvalidKeyDomain,
-    KeyLookupTimeout,
-    KeyLookup,
-    Policy(PolicyError),
-    Overflow,
+/// An error that occurs due to a policy violation.
+///
+/// All policy errors can be disabled via [`Config`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PolicyError {
+    RequiredHeadersNotSigned,
+    UnsignedContent,
+    SignatureExpired,
+    TimestampInFuture,
+    Sha1HashAlgorithm,
+    KeyTooSmall,
 }
 
-impl Display for VerifierError {
+impl Display for PolicyError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DkimSignatureHeaderFormat(error) => error.kind.fmt(f),
-            Self::WrongKeyType => write!(f, "wrong key type"),
-            Self::KeyRecordSyntax => write!(f, "invalid syntax in key record"),
-            Self::KeyRevoked => write!(f, "key in key record revoked"),
-            Self::DisallowedHashAlgorithm => write!(f, "hash algorithm not allowed"),
-            Self::DomainMismatch => write!(f, "domain mismatch"),
-            Self::VerificationFailure(error) => error.fmt(f),
-            Self::BodyHashMismatch => write!(f, "body hash mismatch"),
-            Self::InsufficientBodyLength => write!(f, "truncated body"),
-            Self::NoKeyFound => write!(f, "no key record found"),
-            Self::InvalidKeyDomain => write!(f, "invalid key record domain name"),
-            Self::KeyLookupTimeout => write!(f, "key record lookup timed out"),
-            Self::KeyLookup => write!(f, "key record lookup failed"),
-            Self::Policy(error) => error.fmt(f),
-            Self::Overflow => write!(f, "integer size too large"),
+            Self::RequiredHeadersNotSigned => write!(f, "required headers not signed"),
+            Self::UnsignedContent => write!(f, "unsigned content in message body"),
+            Self::SignatureExpired => write!(f, "signature expired"),
+            Self::TimestampInFuture => write!(f, "timestamp in future"),
+            Self::Sha1HashAlgorithm => write!(f, "SHA-1 hash algorithm not acceptable"),
+            Self::KeyTooSmall => write!(f, "public key too small"),
         }
     }
 }
 
-/// An RFC 8601 DKIM result.
+impl Error for PolicyError {}
+
+/// An error that occurs when performing verification.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum VerificationError {
+    DkimSignatureFormat(DkimSignatureError),
+    Overflow,
+    NoKeyFound,
+    InvalidKeyDomain,
+    Timeout,
+    KeyLookup,
+    KeyRecordFormat(DkimKeyRecordError),
+    WrongKeyType,
+    KeyRevoked,
+    DisallowedHashAlgorithm,
+    DomainMismatch,
+    VerificationFailure(crypto::VerificationError),
+    InsufficientContent,
+    BodyHashMismatch,
+    Policy(PolicyError),
+}
+
+impl Display for VerificationError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DkimSignatureFormat(_) => write!(f, "unusable DKIM signature header"),
+            Self::Overflow => write!(f, "integer too large"),
+            Self::NoKeyFound => write!(f, "no key record found"),
+            Self::InvalidKeyDomain => write!(f, "invalid key record domain name"),
+            Self::Timeout => write!(f, "key record lookup timed out"),
+            Self::KeyLookup => write!(f, "key record lookup failed"),
+            Self::KeyRecordFormat(_) => write!(f, "unusable public key record"),
+            Self::WrongKeyType => write!(f, "wrong key type in key record"),
+            Self::KeyRevoked => write!(f, "key revoked"),
+            Self::DisallowedHashAlgorithm => write!(f, "hash algorithm disallowed in key record"),
+            Self::DomainMismatch => write!(f, "domain mismatch"),
+            Self::VerificationFailure(_) => write!(f, "signature verification failed"),
+            Self::InsufficientContent => write!(f, "not enough message body content"),
+            Self::BodyHashMismatch => write!(f, "body hash mismatch"),
+            Self::Policy(_) => write!(f, "local policy violation"),
+        }
+    }
+}
+
+impl Error for VerificationError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Overflow
+            | Self::NoKeyFound
+            | Self::InvalidKeyDomain
+            | Self::Timeout
+            | Self::KeyLookup
+            | Self::WrongKeyType
+            | Self::KeyRevoked
+            | Self::DisallowedHashAlgorithm
+            | Self::DomainMismatch
+            | Self::InsufficientContent
+            | Self::BodyHashMismatch => None,
+            Self::DkimSignatureFormat(error) => Some(error),
+            Self::KeyRecordFormat(error) => Some(error),
+            Self::VerificationFailure(error) => Some(error),
+            Self::Policy(error) => Some(error),
+        }
+    }
+}
+
+/// An [RFC 8601] DKIM result.
 ///
 /// The mapping of an RFC 6376 *SUCCESS*, *PERMFAIL*, or *TEMPFAIL* result to an
 /// RFC 8601 DKIM result is not well defined. Our interpretation of each result
 /// is given in detail below.
 ///
-/// As a general rule, of the error result kinds `Neutral` is the early bail-out
-/// error type, which signals that verification didn’t proceed past a basic
-/// attempt at parsing a signature, while `Fail`, `Policy`, `Temperror`, and
-/// `Permerror` are error types that are used for more concrete problems
-/// concerning a well-understood signature.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// As a general rule, of the error results `Neutral` is the early bail-out
+/// error result, which signals that verification didn’t proceed past a basic
+/// attempt at parsing a DKIM signature (or DKIM public key record), while
+/// `Fail`, `Policy`, `Temperror`, and `Permerror` are error results that are
+/// used for more concrete problems concerning a well-understood DKIM signature
+/// (or DKIM public key record).
+///
+/// [RFC 8601]: https://www.rfc-editor.org/rfc/rfc8601
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub enum DkimAuthResult {
     /// The *none* result. This result indicates that a message was not signed.
     /// (Not used in this library.)
@@ -334,10 +394,10 @@ pub enum DkimAuthResult {
     Neutral,
 
     /// The *temperror* result. This result means that signature evaluation
-    /// could not be performed due to a temporary reason that might be gone when
-    /// evaluation is retried.
+    /// could not be performed due to a temporary reason. Retrying evaluation
+    /// might produce a different, definitive result.
     ///
-    /// Examples include: DNS lookup timeout, temporary I/O error.
+    /// Examples include: DNS lookup timeout.
     Temperror,
 
     /// The *permerror* result. This result means that a DKIM signature was
@@ -346,7 +406,7 @@ pub enum DkimAuthResult {
     /// rejected (by this and any other implementation).
     ///
     /// Examples include: missing required tag in signature, missing public key
-    /// record in DNS, l= tag larger than message body length.
+    /// record in DNS, *l=* tag larger than message body length.
     Permerror,
 }
 
@@ -367,6 +427,12 @@ impl CanonicalStr for DkimAuthResult {
 impl Display for DkimAuthResult {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(self.canonical_str())
+    }
+}
+
+impl fmt::Debug for DkimAuthResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
     }
 }
 
@@ -490,7 +556,7 @@ impl Verifier {
         let verified_tasks = verifier.verify_all(resolver).await;
 
         let mut tasks = vec![];
-        let mut body_hasher = BodyHasherBuilder::new(config.forbid_partially_signed_body);
+        let mut body_hasher = BodyHasherBuilder::new(config.forbid_unsigned_content);
 
         for task in verified_tasks {
             let status = match task.status {
@@ -555,7 +621,7 @@ impl Verifier {
     pub fn finish(self) -> Vec<VerificationResult> {
         let mut result = vec![];
 
-        let hasher_results = self.body_hasher.finish();
+        let body_hash_results = self.body_hasher.finish();
 
         for task in self.tasks {
             // To obtain the final VerificationStatus, those tasks that did
@@ -564,7 +630,7 @@ impl Verifier {
                 VerificationStatus::Success => {
                     let sig = task.signature.as_ref()
                         .expect("successful verification missing signature");
-                    verify_body_hash(sig, &hasher_results)
+                    verify_body_hash(sig, &body_hash_results)
                 }
                 status @ VerificationStatus::Failure(_) => status,
             };
@@ -581,31 +647,33 @@ impl Verifier {
     }
 }
 
-fn verify_body_hash(sig: &DkimSignature, hasher_results: &BodyHasherResults) -> VerificationStatus {
+fn verify_body_hash(
+    sig: &DkimSignature,
+    body_hash_results: &BodyHashResults,
+) -> VerificationStatus {
     trace!("now checking body hash for signature");
 
     let key = body_hasher_key(sig);
 
-    let hasher_result = hasher_results.get(&key)
+    let body_hash_result = body_hash_results
+        .get(&key)
         .expect("requested body hash result not available");
 
-    match hasher_result {
+    match body_hash_result {
         Ok((h, _)) => {
             if h != &sig.body_hash {
                 trace!("body hash mismatch: {}", util::encode_base64(h));
-                VerificationStatus::Failure(VerifierError::BodyHashMismatch)
+                VerificationStatus::Failure(VerificationError::BodyHashMismatch)
             } else {
                 trace!("body hash matched");
                 VerificationStatus::Success
             }
         }
-        Err(BodyHasherError::InsufficientInput) => {
-            VerificationStatus::Failure(VerifierError::InsufficientBodyLength)
+        Err(BodyHashError::InsufficientInput) => {
+            VerificationStatus::Failure(VerificationError::InsufficientContent)
         }
-        Err(BodyHasherError::InputTruncated) => {
-            VerificationStatus::Failure(
-                VerifierError::Policy(PolicyError::ForbidPartiallySignedBody)
-            )
+        Err(BodyHashError::InputTruncated) => {
+            VerificationStatus::Failure(VerificationError::Policy(PolicyError::UnsignedContent))
         }
     }
 }

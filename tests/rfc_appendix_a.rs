@@ -4,7 +4,7 @@ use common::MockLookup;
 use std::{collections::HashSet, io::ErrorKind};
 use viadkim::{
     header::{FieldName, HeaderFields},
-    signature::{DomainName, Selector, SignatureAlgorithm},
+    signature::{DomainName, Selector, SigningAlgorithm},
     signer::{self, HeaderSelection, SignRequest},
     verifier::VerificationStatus,
 };
@@ -58,7 +58,7 @@ async fn sign_roundtrip() {
     let mut req = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("brisbane").unwrap(),
-        SignatureAlgorithm::RsaSha256,
+        SigningAlgorithm::RsaSha256,
         signing_key,
     );
 
@@ -77,14 +77,11 @@ async fn sign_roundtrip() {
     let sigs = common::sign(headers, &body, [req]).await;
 
     let sign_result = sigs.into_iter().next().unwrap().unwrap();
-    tracing::trace!("{}", sign_result.format_header());
 
     let resolver = make_resolver_spki();
     let config = Default::default();
 
-    let mut headers: Vec<_> = make_header_fields().into();
-    headers.insert(0, sign_result.to_header_field());
-    let headers = HeaderFields::new(headers).unwrap();
+    let headers = common::prepend_header_field(sign_result.to_header_field(), make_header_fields());
 
     let sigs = common::verify(&resolver, &headers, &body, &config).await;
 

@@ -42,13 +42,12 @@ use std::{
 pub type HeaderField = (FieldName, FieldBody);
 
 /// An error that occurs when parsing a header field.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct HeaderFieldError;
 
-// TODO
 impl Display for HeaderFieldError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "header field error")
+        write!(f, "failed to process header field")
     }
 }
 
@@ -103,9 +102,15 @@ impl AsRef<str> for FieldName {
     }
 }
 
+impl Display for FieldName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 impl fmt::Debug for FieldName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        write!(f, "{self}")
     }
 }
 
@@ -184,7 +189,7 @@ impl fmt::Debug for FieldBody {
 }
 
 /// A collection of header fields that can be used for DKIM processing.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct HeaderFields(Vec<HeaderField>);
 
 impl HeaderFields {
@@ -342,7 +347,7 @@ impl Error for HeaderValidationError {}
 ///
 /// This only validates the cardinality requirements in the table at the end of
 /// section 3.6, not the format of the headers. The note regarding the *Sender*
-/// header – ‘MUST occur with multi-address *from*’ – is not checked.
+/// header – ‘MUST occur with multi-address from’ – is not checked.
 pub fn validate_rfc5322(header: impl AsRef<[HeaderField]>) -> Result<(), HeaderValidationError> {
     fn count_names(header: &[HeaderField], name: &str) -> usize {
         header.iter().filter(|(n, _)| *n == name).count()

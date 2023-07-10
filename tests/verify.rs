@@ -3,17 +3,16 @@ pub mod common;
 use common::MockLookup;
 use std::io::ErrorKind;
 use viadkim::{
-    crypto,
-    header::{FieldBody, FieldName, HeaderFields},
+    header::{FieldName, HeaderFields},
     signature::{DomainName, Selector, SigningAlgorithm},
     signer::{HeaderSelection, SignRequest},
-    verifier::{VerificationError, VerificationStatus},
+    verifier::VerificationStatus,
 };
 
-// This test shows how z= can record the original, unmodified header.
+// TODO wip
 
 #[tokio::test]
-async fn copied_headers_ok() {
+async fn basic_verify() {
     let _ = tracing_subscriber::fmt::try_init();
 
     let resolver = MockLookup::new(|name| {
@@ -55,14 +54,7 @@ async fn copied_headers_ok() {
 
     // Verify with modified headers
 
-    let rest = make_header_fields().into_iter().map(|(name, value)| {
-        if name == "Subject" {
-            (name, FieldBody::new(*b" REPLACED").unwrap())
-        } else {
-            (name, value)
-        }
-    });
-    let headers = common::prepend_header_field(sig.to_header_field(), rest);
+    let headers = common::prepend_header_field(sig.to_header_field(), make_header_fields());
 
     let config = Default::default();
 
@@ -70,25 +62,11 @@ async fn copied_headers_ok() {
 
     let result = sigs.into_iter().next().unwrap();
 
-    assert_eq!(
-        result.status,
-        VerificationStatus::Failure(VerificationError::VerificationFailure(
-            crypto::VerificationError::VerificationFailure
-        ))
-    );
-
-    // Verify again, but now providing original headers from z=
-
-    let rest = sig.signature.copied_headers.iter()
-        .map(|(name, value)| (name.clone(), FieldBody::new(&value[..]).unwrap()));
-    let headers = common::prepend_header_field(sig.to_header_field(), rest);
-
-    let sigs = common::verify(&resolver, &headers, &body, &config).await;
-
-    let result = sigs.into_iter().next().unwrap();
-
     assert_eq!(result.status, VerificationStatus::Success);
 }
+
+// TODO body length: insufficient content
+// TODO body length: policy forbids unsigned content
 
 fn make_header_fields() -> HeaderFields {
     "From: me

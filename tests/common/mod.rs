@@ -1,9 +1,9 @@
-use std::{future::Future, io, pin::Pin, sync::Arc};
+use std::{future::Future, io, iter, pin::Pin, sync::Arc};
 use tokio::fs;
 use viadkim::{
     crypto::SigningKey,
-    header::HeaderFields,
-    signer::{SignRequest, SignResult, Signer, SignerError},
+    header::{HeaderField, HeaderFields},
+    signer::{SignRequest, SigningResult, Signer, SigningError},
     verifier::{Config, LookupTxt, VerificationResult, Verifier},
 };
 
@@ -30,7 +30,7 @@ impl LookupTxt for MockLookup {
     }
 }
 
-// TODO
+// TODO test helpers
 pub async fn read_public_key_file_base64(file_name: &str) -> io::Result<String> {
     let s = fs::read_to_string(file_name).await?;
     let mut key_base64: Vec<_> = s.lines().skip(1).collect();
@@ -47,7 +47,7 @@ pub async fn sign<I>(
     headers: HeaderFields,
     body: &[u8],
     requests: I,
-) -> Vec<Result<SignResult, SignerError>>
+) -> Vec<Result<SigningResult, SigningError>>
 where
     I: IntoIterator<Item = SignRequest<SigningKey>>,
 {
@@ -74,4 +74,12 @@ where
     let _ = verifier.process_body_chunk(body);
 
     verifier.finish()
+}
+
+pub fn prepend_header_field<I>(first: HeaderField, rest: I) -> HeaderFields
+where
+    I: IntoIterator<Item = HeaderField>,
+{
+    let headers: Vec<_> = iter::once(first).chain(rest).collect();
+    HeaderFields::new(headers).unwrap()
 }

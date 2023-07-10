@@ -3,7 +3,7 @@ pub mod common;
 use std::str::FromStr;
 use viadkim::{
     header::{FieldBody, FieldName, HeaderFields},
-    signature::{CanonicalizationAlgorithm, DomainName, Selector, SignatureAlgorithm},
+    signature::{CanonicalizationAlgorithm, DomainName, Selector, SigningAlgorithm},
     signer::{SignRequest, Timestamp},
 };
 
@@ -22,7 +22,7 @@ async fn basic_sign() {
     let mut request = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("sel").unwrap(),
-        SignatureAlgorithm::RsaSha256,
+        SigningAlgorithm::RsaSha256,
         signing_key,
     );
 

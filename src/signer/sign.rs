@@ -17,11 +17,12 @@
 use crate::{
     crypto::{self, HashAlgorithm, SigningKey},
     header::{FieldName, HeaderFields},
-    message_hash::{self, BodyHasherError, BodyHasherResults},
+    message_hash::{self, BodyHashError, BodyHashResults},
     signer::{
         self,
         format::{self, UnsignedDkimSignature},
-        BodyLength, HeaderSelection, OutputFormat, SignRequest, SignResult, SignerError, Timestamp,
+        BodyLength, HeaderSelection, OutputFormat, SignRequest, SigningError, SigningResult,
+        Timestamp,
     },
 };
 use std::{collections::HashSet, time::SystemTime};
@@ -30,8 +31,8 @@ use tracing::trace;
 pub async fn perform_signing<T>(
     request: SignRequest<T>,
     headers: &HeaderFields,
-    hasher_results: &BodyHasherResults,
-) -> Result<SignResult, SignerError>
+    hasher_results: &BodyHashResults,
+) -> Result<SigningResult, SigningError>
 where
     T: AsRef<SigningKey>,
 {
@@ -40,8 +41,7 @@ where
 
     // calculate body hash
 
-    let body_length = signer::convert_body_length(request.body_length)
-        .expect("unsupported integer conversion");
+    let body_length = request.body_length.to_usize().expect("unsupported integer conversion");
     let hash_alg = algorithm.hash_algorithm();
     let key = (body_length, hash_alg, canonicalization.body);
 
@@ -50,21 +50,21 @@ where
 
     let (body_hash, final_len) = match hasher_result {
         Ok((h, final_len)) => (h.clone(), *final_len),
-        Err(BodyHasherError::InsufficientInput) => {
-            return Err(SignerError::InsufficientBodyLength);
+        Err(BodyHashError::InsufficientInput) => {
+            return Err(SigningError::InsufficientContent);
         }
-        Err(BodyHasherError::InputTruncated) => {
+        Err(BodyHashError::InputTruncated) => {
             panic!("unexpected canonicalization error");
         }
     };
 
     let body_length = match request.body_length {
-        BodyLength::All => None,
-        BodyLength::OnlyMessageLength | BodyLength::Exact(_) => {
+        BodyLength::NoLimit => None,
+        BodyLength::MessageContent | BodyLength::Exact(_) => {
             match final_len.try_into() {
                 Ok(n) => Some(n),
                 Err(_) => {
-                    return Err(SignerError::Overflow);
+                    return Err(SigningError::Overflow);
                 }
             }
         }
@@ -78,13 +78,9 @@ where
     };
 
     // signed headers must include From
-    if !signed_headers.iter().any(|name| *name == "From") {
-        return Err(SignerError::FromHeaderNotSigned);
-    }
+    assert!(signed_headers.iter().any(|name| *name == "From"));
     // must not attempt to sign header names containing ';' (incompatible with DKIM-Signature)
-    if signed_headers.iter().any(|name| name.as_ref().contains(';')) {
-        return Err(SignerError::InvalidSignedFieldName);
-    }
+    assert!(!signed_headers.iter().any(|name| name.as_ref().contains(';')));
 
     // calculate timestamp and expiration
 
@@ -113,7 +109,6 @@ where
 
     // prepare complete formatted signature header with body hash except with contents of b= tag
 
-    // TODO think again about proper validation of all inputs here
     let sig = UnsignedDkimSignature {
         algorithm,
         body_hash,
@@ -147,7 +142,7 @@ async fn produce_signature(
     signing_key: &SigningKey,
     format: &OutputFormat,
     headers: &HeaderFields,
-) -> Result<SignResult, SignerError> {
+) -> Result<SigningResult, SigningError> {
     let b_len = estimate_b_tag_length(signing_key);
 
     let (mut formatted_header_value, insertion_index) = sig.format_without_signature(format, b_len);
@@ -163,22 +158,15 @@ async fn produce_signature(
         headers,
         &sig.signed_headers,
         header_name,
-        &formatted_header_value
+        &formatted_header_value,
     );
 
     assert_eq!(signing_key.key_type(), algorithm.key_type());
 
     // note artificial await point here, yields to runtime if many signatures
-    let signature_data = match sign_hash(signing_key, hash_alg, &data_hash).await {
-        Ok(signature_data) => {
-            trace!("successfully signed");
-            signature_data.into_boxed_slice()
-        }
-        Err(_e) => {
-            trace!("signing failed");
-            return Err(SignerError::SigningFailure);
-        }
-    };
+    let signature_data = sign_hash(signing_key, hash_alg, &data_hash)
+        .await?
+        .into_boxed_slice();
 
     let sig = sig.into_signature(signature_data);
 
@@ -193,7 +181,7 @@ async fn produce_signature(
         &format.indentation,
     );
 
-    Ok(SignResult {
+    Ok(SigningResult {
         header_name: header_name.into(),
         header_value: formatted_header_value,
         signature: sig,
@@ -230,7 +218,7 @@ async fn sign_hash(
     signing_key: &SigningKey,
     hash_alg: HashAlgorithm,
     data_hash: &[u8],
-) -> Result<Vec<u8>, SignerError> {
+) -> Result<Vec<u8>, SigningError> {
     match signing_key {
         SigningKey::Rsa(k) => match crypto::sign_rsa(hash_alg, k, data_hash) {
             Ok(s) => {
@@ -239,7 +227,7 @@ async fn sign_hash(
             }
             Err(e) => {
                 trace!("RSA signing failed: {e}");
-                Err(SignerError::SigningFailure)
+                Err(SigningError::SigningFailure)
             }
         },
         SigningKey::Ed25519(k) => match crypto::sign_ed25519(k, data_hash) {
@@ -249,7 +237,7 @@ async fn sign_hash(
             }
             Err(e) => {
                 trace!("Ed25519 signing failed: {e}");
-                Err(SignerError::SigningFailure)
+                Err(SigningError::SigningFailure)
             }
         },
     }

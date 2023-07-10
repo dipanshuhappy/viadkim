@@ -44,7 +44,7 @@ use std::{
 
 // Note: some of this is copied from viaspf.
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ParseDomainError;
 
 impl Display for ParseDomainError {
@@ -57,7 +57,7 @@ impl Error for ParseDomainError {}
 
 /// A domain name.
 ///
-/// This type is used to wrap domain names as used in the d= and i= tags.
+/// This type is used to wrap domain names as used in the *d=* and *i=* tags.
 #[derive(Clone, Eq)]
 pub struct DomainName(Box<str>);
 
@@ -156,7 +156,7 @@ fn is_valid_domain_name(s: &str) -> bool {
 
 /// A selector.
 ///
-/// This type is used to wrap a sequence of labels as used in the s= tag.
+/// This type is used to wrap a sequence of labels as used in the *s=* tag.
 #[derive(Clone, Eq)]
 pub struct Selector(Box<str>);
 
@@ -287,7 +287,7 @@ fn has_valid_label_len(s: &str) -> bool {
     matches!(s.len(), 1..=63)
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ParseIdentityError;
 
 impl Display for ParseIdentityError {
@@ -298,14 +298,10 @@ impl Display for ParseIdentityError {
 
 impl Error for ParseIdentityError {}
 
-// TODO note terminology Identity, Identifier, SDID, AUID in sections 2.3 to 2.6
-
-// TODO don't derive Debug, do manual impl
-
 /// An agent or user identifier.
 ///
-/// This type is used to wrap addresses as used in the i= tags.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+/// This type is used to wrap addresses as used in the *i=* tag.
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct Identity {
     // Note: because PartialEq and Hash are derived, the local-part will be
     // compared/hashed literally and in case-sensitive fashion.
@@ -355,6 +351,12 @@ impl Display for Identity {
             write!(f, "{local_part}")?;
         }
         write!(f, "@{}", self.domain_part)
+    }
+}
+
+impl fmt::Debug for Identity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
     }
 }
 
@@ -436,7 +438,7 @@ fn is_dot_string(s: &str) -> bool {
     !dot
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ParseAlgorithmError;
 
 impl Display for ParseAlgorithmError {
@@ -447,23 +449,23 @@ impl Display for ParseAlgorithmError {
 
 impl Error for ParseAlgorithmError {}
 
-/// A signature algorithm.
+/// A signing algorithm.
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub enum SignatureAlgorithm {
-    /// The *rsa-sha256* signature algorithm.
+pub enum SigningAlgorithm {
+    /// The *rsa-sha256* signing algorithm.
     RsaSha256,
-    /// The *ed25519-sha256* signature algorithm.
+    /// The *ed25519-sha256* signing algorithm.
     Ed25519Sha256,
     #[cfg(feature = "pre-rfc8301")]
-    /// The *rsa-sha1* signature algorithm.
+    /// The *rsa-sha1* signing algorithm.
     RsaSha1,
 }
 
-impl SignatureAlgorithm {
-    /// Assembles a signature algorithm from the constituent key type and hash
+impl SigningAlgorithm {
+    /// Assembles a signing algorithm from the constituent key type and hash
     /// algorithm, if possible.
-    pub fn from_parts(key_type: KeyType, algorithm: HashAlgorithm) -> Option<Self> {
-        match (key_type, algorithm) {
+    pub fn from_parts(key_type: KeyType, hash_alg: HashAlgorithm) -> Option<Self> {
+        match (key_type, hash_alg) {
             (KeyType::Rsa, HashAlgorithm::Sha256) => Some(Self::RsaSha256),
             (KeyType::Ed25519, HashAlgorithm::Sha256) => Some(Self::Ed25519Sha256),
             #[cfg(feature = "pre-rfc8301")]
@@ -473,7 +475,7 @@ impl SignatureAlgorithm {
         }
     }
 
-    /// Returns this signature algorithm’s key type component.
+    /// Returns this signing algorithm’s key type component.
     pub fn key_type(self) -> KeyType {
         match self {
             Self::RsaSha256 => KeyType::Rsa,
@@ -483,7 +485,7 @@ impl SignatureAlgorithm {
         }
     }
 
-    /// Returns this signature algorithm’s hash algorithm component.
+    /// Returns this signing algorithm’s hash algorithm component.
     pub fn hash_algorithm(self) -> HashAlgorithm {
         match self {
             Self::RsaSha256 | Self::Ed25519Sha256 => HashAlgorithm::Sha256,
@@ -493,7 +495,7 @@ impl SignatureAlgorithm {
     }
 }
 
-impl CanonicalStr for SignatureAlgorithm {
+impl CanonicalStr for SigningAlgorithm {
     fn canonical_str(&self) -> &'static str {
         match self {
             Self::RsaSha256 => "rsa-sha256",
@@ -504,19 +506,19 @@ impl CanonicalStr for SignatureAlgorithm {
     }
 }
 
-impl Display for SignatureAlgorithm {
+impl Display for SigningAlgorithm {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(self.canonical_str())
     }
 }
 
-impl fmt::Debug for SignatureAlgorithm {
+impl fmt::Debug for SigningAlgorithm {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{self}")
     }
 }
 
-impl FromStr for SignatureAlgorithm {
+impl FromStr for SigningAlgorithm {
     type Err = ParseAlgorithmError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -531,6 +533,12 @@ impl FromStr for SignatureAlgorithm {
             }
             Err(ParseAlgorithmError)
         }
+    }
+}
+
+impl From<SigningAlgorithm> for (KeyType, HashAlgorithm) {
+    fn from(alg: SigningAlgorithm) -> Self {
+        (alg.key_type(), alg.hash_algorithm())
     }
 }
 
@@ -650,14 +658,12 @@ impl FromStr for Canonicalization {
 /// The *DKIM-Signature* header name.
 pub const DKIM_SIGNATURE_NAME: &str = "DKIM-Signature";
 
-// TODO impl `Error`
-
 /// An error that occurs when parsing a DKIM signature for further processing.
 ///
 /// The error comes with salvaged data from the failed parsing attempt, that
 /// could be reported in an *Authentication-Results* header. This data is in raw
 /// (string) form because it might fail to parse into a concrete type.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct DkimSignatureError {
     /// The error kind that caused this error.
     pub kind: DkimSignatureErrorKind,
@@ -688,97 +694,104 @@ impl DkimSignatureError {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl Display for DkimSignatureError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.kind.fmt(f)
+    }
+}
+
+impl Error for DkimSignatureError {}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DkimSignatureErrorKind {
-    MissingVersionTag,
-    UnsupportedVersion,
+    Utf8Encoding,
+    TagListFormat,
+    IncompatibleVersion,
     HistoricAlgorithm,
     UnsupportedAlgorithm,
-    MissingAlgorithmTag,
-    MissingSignatureTag,
-    EmptySignatureTag,
     InvalidBase64,
-    MissingBodyHashTag,
+    EmptySignatureTag,
     EmptyBodyHashTag,
     UnsupportedCanonicalization,
     InvalidDomain,
-    MissingDomainTag,
     InvalidSignedHeaderName,
-    SignedHeadersEmpty,
+    EmptySignedHeadersTag,
     FromHeaderNotSigned,
-    MissingSignedHeadersTag,
+    InvalidIdentity,
     InvalidBodyLength,
     InvalidQueryMethod,
-    QueryMethodsNotSupported,
+    NoSupportedQueryMethods,
     InvalidSelector,
-    MissingSelectorTag,
     InvalidTimestamp,
     InvalidExpiration,
     InvalidCopiedHeaderField,
+    MissingVersionTag,
+    MissingAlgorithmTag,
+    MissingSignatureTag,
+    MissingBodyHashTag,
+    MissingDomainTag,
+    MissingSignedHeadersTag,
+    MissingSelectorTag,
     DomainMismatch,
-    InvalidIdentity,
     ExpirationNotAfterTimestamp,
-    Utf8Encoding,
-    InvalidTagList,
 }
 
 impl Display for DkimSignatureErrorKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingVersionTag => write!(f, "v= tag missing"),
-            Self::UnsupportedVersion=> write!(f, "unsupported version"),
-            Self::HistoricAlgorithm => write!(f, "historic signature algorithm"),
-            Self::UnsupportedAlgorithm => write!(f, "unsupported algorithm"),
-            Self::MissingAlgorithmTag => write!(f, "a= tag missing"),
-            Self::MissingSignatureTag => write!(f, "b= tag missing"),
-            Self::EmptySignatureTag => write!(f, "empty b= tag"),
+            Self::Utf8Encoding => write!(f, "signature not UTF-8 encoded"),
+            Self::TagListFormat => write!(f, "ill-formed tag list"),
+            Self::IncompatibleVersion => write!(f, "incompatible version"),
+            Self::HistoricAlgorithm => write!(f, "historic signing algorithm"),
+            Self::UnsupportedAlgorithm => write!(f, "unsupported signing algorithm"),
             Self::InvalidBase64 => write!(f, "invalid Base64 string"),
-            Self::MissingBodyHashTag => write!(f, "bh= tag missing"),
-            Self::EmptyBodyHashTag => write!(f, "empty bh= tag"),
+            Self::EmptySignatureTag => write!(f, "b= tag empty"),
+            Self::EmptyBodyHashTag => write!(f, "bh= tag empty"),
             Self::UnsupportedCanonicalization => write!(f, "unsupported canonicalization"),
-            Self::InvalidDomain => write!(f, "invalid domain"),
-            Self::MissingDomainTag => write!(f, "d= tag missing"),
-            Self::InvalidSignedHeaderName => write!(f, "signed header name invalid"),
-            Self::SignedHeadersEmpty => write!(f, "no signed headers"),
+            Self::InvalidDomain => write!(f, "invalid signing domain"),
+            Self::InvalidSignedHeaderName => write!(f, "invalid signed header name"),
+            Self::EmptySignedHeadersTag => write!(f, "h= tag empty"),
             Self::FromHeaderNotSigned => write!(f, "From header not signed"),
-            Self::MissingSignedHeadersTag => write!(f, "h= tag missing"),
+            Self::InvalidIdentity => write!(f, "invalid signing identity"),
             Self::InvalidBodyLength => write!(f, "invalid body length"),
-            Self::InvalidQueryMethod => write!(f, "invalid query method type"),
-            Self::QueryMethodsNotSupported => write!(f, "no supported query method"),
+            Self::InvalidQueryMethod => write!(f, "invalid query method"),
+            Self::NoSupportedQueryMethods => write!(f, "no supported query methods"),
             Self::InvalidSelector => write!(f, "invalid selector"),
-            Self::MissingSelectorTag => write!(f, "s= tag missing"),
             Self::InvalidTimestamp => write!(f, "invalid timestamp"),
             Self::InvalidExpiration => write!(f, "invalid expiration"),
             Self::InvalidCopiedHeaderField => write!(f, "invalid header field in z= tag"),
+            Self::MissingVersionTag => write!(f, "v= tag missing"),
+            Self::MissingAlgorithmTag => write!(f, "a= tag missing"),
+            Self::MissingSignatureTag => write!(f, "b= tag missing"),
+            Self::MissingBodyHashTag => write!(f, "bh= tag missing"),
+            Self::MissingDomainTag => write!(f, "d= tag missing"),
+            Self::MissingSignedHeadersTag => write!(f, "h= tag missing"),
+            Self::MissingSelectorTag => write!(f, "s= tag missing"),
             Self::DomainMismatch => write!(f, "domain mismatch"),
-            Self::InvalidIdentity => write!(f, "invalid identity"),
             Self::ExpirationNotAfterTimestamp => write!(f, "expiration not after timestamp"),
-            Self::Utf8Encoding => write!(f, "signature not UTF-8 encoded"),
-            Self::InvalidTagList => write!(f, "invalid tag-list"),
         }
     }
 }
 
-/// DKIM signature data as encoded in a *DKIM-Signature* header field.
+/// DKIM signature data as encoded in a *DKIM-Signature* header.
 ///
 /// The *v=* tag (always 1) and the *q=* tag (always includes dns/txt) are not
 /// included.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct DkimSignature {
     // The fields are strongly typed and have public visibility. This does allow
-    // constructing an ‘invalid’ `DkimSignature` (eg with empty signature, or
+    // constructing an invalid `DkimSignature` (eg with empty signature, or
     // empty signed headers) but we consider this acceptable, because this is
     // mainly an ‘output’ data container.
     //
-    // Notes:
-    // - i= is Option, because §3.5: ‘the Signer might wish to assert that
+    // i= is `Option` because of §3.5: ‘the Signer might wish to assert that
     // although it is willing to go as far as signing for the domain, it is
     // unable or unwilling to commit to an individual user name within the
     // domain. It can do so by including the domain part but not the local-part
     // of the identity.’
 
     /// The *a=* tag.
-    pub algorithm: SignatureAlgorithm,
+    pub algorithm: SigningAlgorithm,
     /// The *b=* tag.
     pub signature_data: Box<[u8]>,
     /// The *bh=* tag.
@@ -827,7 +840,7 @@ impl DkimSignature {
             match name {
                 "v" => {
                     if value != "1" {
-                        return Err(DkimSignatureErrorKind::UnsupportedVersion);
+                        return Err(DkimSignatureErrorKind::IncompatibleVersion);
                     }
 
                     version_seen = true;
@@ -878,6 +891,10 @@ impl DkimSignature {
                     domain = Some(value);
                 }
                 "h" => {
+                    if value.is_empty() {
+                        return Err(DkimSignatureErrorKind::EmptySignedHeadersTag);
+                    }
+
                     let mut sh = vec![];
 
                     for s in tag_list::parse_colon_separated_value(value) {
@@ -886,9 +903,6 @@ impl DkimSignature {
                         sh.push(name);
                     }
 
-                    if sh.is_empty() {
-                        return Err(DkimSignatureErrorKind::SignedHeadersEmpty);
-                    }
                     if !sh.iter().any(|h| *h == "From") {
                         return Err(DkimSignatureErrorKind::FromHeaderNotSigned);
                     }
@@ -933,7 +947,7 @@ impl DkimSignature {
                     }
 
                     if !dns_txt_seen {
-                        return Err(DkimSignatureErrorKind::QueryMethodsNotSupported);
+                        return Err(DkimSignatureErrorKind::NoSupportedQueryMethods);
                     }
                 }
                 "s" => {
@@ -1020,16 +1034,10 @@ impl FromStr for DkimSignature {
     type Err = DkimSignatureError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let tag_list = match TagList::from_str(s) {
-            Ok(r) => r,
-            Err(_e) => {
-                return Err(DkimSignatureError::new(
-                    DkimSignatureErrorKind::InvalidTagList,
-                ));
-            }
-        };
+        let tag_list = TagList::from_str(s)
+            .map_err(|_| DkimSignatureError::new(DkimSignatureErrorKind::TagListFormat))?;
 
-        match DkimSignature::from_tag_list(&tag_list) {
+        match Self::from_tag_list(&tag_list) {
             Ok(sig) => Ok(sig),
             Err(e) => {
                 // The error path. Extract some data in raw form.
@@ -1106,8 +1114,7 @@ impl fmt::Debug for DkimSignature {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tag_list::TagList;
-    use base64ct::{Base64, Encoding};
+    use crate::{tag_list::TagList, util};
     use CanonicalizationAlgorithm::*;
 
     #[test]
@@ -1176,6 +1183,24 @@ mod tests {
     }
 
     #[test]
+    fn identity_repr_ok() {
+        let id1 = Identity::new("@example.org").unwrap();
+        let id2 = Identity::new("Me@Example.Org").unwrap();
+        let id3 = Identity::new("我.x#!@example.中国").unwrap();
+        let id4 = Identity::new("\"x #$我\\\"\"@example.org").unwrap();
+
+        assert_eq!(id1.to_string(), "@example.org");
+        assert_eq!(id2.to_string(), "Me@Example.Org");
+        assert_eq!(id3.to_string(), "我.x#!@example.中国");
+        assert_eq!(id4.to_string(), "\"x #$我\\\"\"@example.org");
+
+        assert_eq!(format!("{:?}", id1), "@example.org");
+        assert_eq!(format!("{:?}", id2), "Me@Example.Org");
+        assert_eq!(format!("{:?}", id3), "我.x#!@example.中国");
+        assert_eq!(format!("{:?}", id4), "\"x #$我\\\"\"@example.org");
+    }
+
+    #[test]
     fn rfc_example_signature() {
         // See §3.5:
         let example = " v=1; a=rsa-sha256; d=example.net; s=brisbane;
@@ -1195,13 +1220,13 @@ mod tests {
         assert_eq!(
             hdr,
             DkimSignature {
-                algorithm: SignatureAlgorithm::RsaSha256,
-                signature_data: Base64::decode_vec(
+                algorithm: SigningAlgorithm::RsaSha256,
+                signature_data: util::decode_base64(
                     "dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZVoG4ZHRNiYzR"
                 )
                 .unwrap()
                 .into(),
-                body_hash: Base64::decode_vec("MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=")
+                body_hash: util::decode_base64("MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=")
                     .unwrap()
                     .into(),
                 canonicalization: (Simple, Simple).into(),
@@ -1244,7 +1269,7 @@ mod tests {
 
     #[test]
     fn complicated_example_signature() {
-        // TODO
+        // TODO revisit example
         let example = " v = 1 ; a=rsa-sha256;d=example.net; s=brisbane;
    c=simple; q=dns/txt; i=中文=40en
     g.example =2E net;
@@ -1262,13 +1287,13 @@ mod tests {
         assert_eq!(
             hdr,
             DkimSignature {
-                algorithm: SignatureAlgorithm::RsaSha256,
-                signature_data: Base64::decode_vec(
+                algorithm: SigningAlgorithm::RsaSha256,
+                signature_data: util::decode_base64(
                     "dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZVoG4ZHRNiYzR"
                 )
                 .unwrap()
                 .into(),
-                body_hash: Base64::decode_vec("MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=")
+                body_hash: util::decode_base64("MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=")
                     .unwrap()
                     .into(),
                 canonicalization: (Simple, Simple).into(),

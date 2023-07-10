@@ -15,15 +15,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::crypto::HashAlgorithm;
-use sha2::Sha256;
 #[cfg(feature = "pre-rfc8301")]
 use sha1::Sha1;
+use sha2::Sha256;
 
 /// Computes the hash of the given bytes.
-pub fn digest(hash_alg: HashAlgorithm, bytes: impl AsRef<[u8]>) -> Box<[u8]> {
+pub fn digest(alg: HashAlgorithm, bytes: impl AsRef<[u8]>) -> Box<[u8]> {
     use digest::Digest;
 
-    match hash_alg {
+    match alg {
         HashAlgorithm::Sha256 => {
             let hash = Sha256::digest(bytes);
             Box::from(&hash[..])
@@ -36,11 +36,11 @@ pub fn digest(hash_alg: HashAlgorithm, bytes: impl AsRef<[u8]>) -> Box<[u8]> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct InsufficientInput;
 
 /// Status returned by a hasher after digesting bytes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HashStatus {
     /// The given input was digested in entirety.
     AllConsumed,
@@ -56,8 +56,8 @@ pub struct CountingHasher {
 }
 
 impl CountingHasher {
-    pub fn new(hash_alg: HashAlgorithm, length: Option<usize>) -> Self {
-        let digest: Box<dyn digest::DynDigest + Send> = match hash_alg {
+    pub fn new(alg: HashAlgorithm, length: Option<usize>) -> Self {
+        let digest: Box<dyn digest::DynDigest + Send> = match alg {
             HashAlgorithm::Sha256 => Box::new(Sha256::default()),
             #[cfg(feature = "pre-rfc8301")]
             HashAlgorithm::Sha1 => Box::new(Sha1::default()),
@@ -112,7 +112,7 @@ impl CountingHasher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64ct::{Base64, Encoding};
+    use crate::util;
 
     #[test]
     fn counting_hasher_ok() {
@@ -146,12 +146,12 @@ mod tests {
     fn counting_hasher_rfc_examples() {
         // See §3.4.3:
         let (hash, len) = hash_with_counting_hasher(HashAlgorithm::Sha256, b"\r\n");
-        assert_eq!(Base64::encode_string(&hash), "frcCV1k9oG9oKj3dpUqdJg1PxRT2RSN/XKdLCPjaYaY=");
+        assert_eq!(util::encode_base64(&hash), "frcCV1k9oG9oKj3dpUqdJg1PxRT2RSN/XKdLCPjaYaY=");
         assert_eq!(len, 2);
 
         // See §3.4.4:
         let (hash, len) = hash_with_counting_hasher(HashAlgorithm::Sha256, b"");
-        assert_eq!(Base64::encode_string(&hash), "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
+        assert_eq!(util::encode_base64(&hash), "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
         assert_eq!(len, 0);
     }
 
@@ -160,12 +160,12 @@ mod tests {
     fn counting_hasher_rfc_examples_sha1() {
         // See §3.4.3:
         let (hash, len) = hash_with_counting_hasher(HashAlgorithm::Sha1, b"\r\n");
-        assert_eq!(Base64::encode_string(&hash), "uoq1oCgLlTqpdDX/iUbLy7J1Wic=");
+        assert_eq!(util::encode_base64(&hash), "uoq1oCgLlTqpdDX/iUbLy7J1Wic=");
         assert_eq!(len, 2);
 
         // See §3.4.4:
         let (hash, len) = hash_with_counting_hasher(HashAlgorithm::Sha1, b"");
-        assert_eq!(Base64::encode_string(&hash), "2jmj7l5rSw0yVb/vlWAYkK/YBwk=");
+        assert_eq!(util::encode_base64(&hash), "2jmj7l5rSw0yVb/vlWAYkK/YBwk=");
         assert_eq!(len, 0);
     }
 

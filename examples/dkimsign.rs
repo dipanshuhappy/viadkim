@@ -5,8 +5,8 @@ use tokio::{
 };
 use viadkim::{
     crypto::{HashAlgorithm, SigningKey},
-    signature::{DomainName, Selector, SignatureAlgorithm},
-    signer::{SignRequest, SignResult, Signer},
+    signature::{DomainName, Selector, SigningAlgorithm},
+    signer::{SignRequest, Signer, SigningResult},
 };
 
 #[tokio::main]
@@ -34,14 +34,14 @@ async fn main() {
     let selector = Selector::new(selector).unwrap();
 
     let signing_key = SigningKey::from_pkcs8_pem(&key_file).unwrap();
-    let algorithm = SignatureAlgorithm::from_parts(signing_key.key_type(), HashAlgorithm::Sha256).unwrap();
+    let algorithm = SigningAlgorithm::from_parts(signing_key.key_type(), HashAlgorithm::Sha256).unwrap();
 
     let mut request = SignRequest::new(domain, selector, algorithm, signing_key);
     request.valid_duration = None;
     request.copy_headers = false;
-    // request.body_length = viadkim::signer::BodyLength::OnlyMessageLength;
+    // request.body_length = viadkim::signer::BodyLength::MessageContent;
     // request.identity = Some(viadkim::signature::Identity::new("\"abc|;de\"@中文.gluet.ch").unwrap());
-    // request.algorithm = SignatureAlgorithm::RsaSha1;
+    // request.algorithm = SigningAlgorithm::RsaSha1;
     // request.format.tag_order = Some(Box::new(|a, b| a.cmp(b)));
     // request.format.line_width = 64.try_into().unwrap();
     // request.format.indentation = "  ".into();
@@ -67,7 +67,7 @@ async fn main() {
     for (_i, result) in sigs.into_iter().enumerate() {
         match result {
             Ok(result) => {
-                let SignResult { header_name, header_value, .. } = result;
+                let SigningResult { header_name, header_value, .. } = result;
                 let header_value = header_value.replace("\r\n", "\n");
                 println!("{header_name}:{header_value}");
             }

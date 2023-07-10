@@ -21,17 +21,16 @@
 //! well as low-level APIs that cover the various DKIM protocol areas.
 //!
 //! The high-level API can be used to sign email messages using DKIM signatures
-//! (module `signer`), and to verify such signatures attached to email messages
-//! (module `verifier`). Most users will want to deal with DKIM via these APIs.
-//! For convenience, all the relevant items are re-exported at the top level.
+//! (module `signer`), and to verify such signatures (module `verifier`). Most
+//! users will want to deal with DKIM via these APIs. For convenience, all the
+//! relevant items are re-exported at the top level.
 //!
 //! The high-level API exposes various configuration options for both the
-//! signing and verification process. It is, however, closed, and does not
-//! provide extension points or similar. Instead, the low-level building blocks
-//! are provided in various additional modules. They contain basic helpers for
-//! cryptography, canonicalisation, encoding, etc. Users familiar with DKIM
-//! could use these building blocks to build their own signing and verification
-//! facilities.
+//! signing and verification process. It is, however, closed, and not
+//! extensible. Instead, the low-level building blocks are provided in various
+//! additional modules. They contain basic helpers for cryptography,
+//! canonicalisation, encoding, etc. Users familiar with DKIM could use these
+//! building blocks to build their own signing and verification facilities.
 //!
 //! # Usage
 //!
@@ -54,8 +53,22 @@
 //! becomes available. This is a legacy compatibility feature, its use is
 //! strongly discouraged.
 //!
+//! # Trace logging
+//!
+//! This library uses the [tracing] crate for internal trace logging. For
+//! insight into library operation, install a [tracing
+//! subscriber][tracing-subscriber] and enable logging at `trace` level.
+//!
 //! [RFC 6376]: https://www.rfc-editor.org/rfc/rfc6376
 //! [RFC 8301]: https://www.rfc-editor.org/rfc/rfc8301
+//! [tracing]: https://crates.io/crates/tracing
+//! [tracing-subscriber]: https://crates.io/crates/tracing-subscriber
+
+// Trace logging: logging about internal operation via `tracing::trace!` is done
+// only in the high-level API in modules `signer` and `verifier`.
+
+// Throughout, where RFC 6376 is quoted in comments, section numbers are
+// referred to with the symbol ‘§’ (also where RFC 6376 is not mentioned).
 
 pub mod canonicalize;
 pub mod crypto;
@@ -73,8 +86,8 @@ pub mod verifier;
 pub use crate::{
     crypto::SigningKey,
     header::{FieldBody, FieldName, HeaderField, HeaderFields},
-    signature::{DomainName, Selector, SignatureAlgorithm},
-    signer::{SignRequest, SignResult, Signer, SignerError},
+    signature::{DomainName, Selector, SigningAlgorithm},
+    signer::{RequestError, SignRequest, Signer, SigningError, SigningResult},
     util::{decode_base64, encode_base64, Base64Error, CanonicalStr},
-    verifier::{Config, VerificationResult, VerificationStatus, Verifier, VerifierError},
+    verifier::{Config, VerificationError, VerificationResult, VerificationStatus, Verifier},
 };

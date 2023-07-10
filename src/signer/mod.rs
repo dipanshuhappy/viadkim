@@ -25,7 +25,7 @@ use crate::{
     message_hash::{BodyHasher, BodyHasherBuilder, BodyHasherStance},
     parse,
     signature::{
-        Canonicalization, DkimSignature, DomainName, Identity, Selector, SignatureAlgorithm,
+        Canonicalization, DkimSignature, DomainName, Identity, Selector, SigningAlgorithm,
         DKIM_SIGNATURE_NAME,
     },
     signer::format::LINE_WIDTH,
@@ -45,19 +45,21 @@ use std::{
 pub enum BodyLength {
     /// Do not limit the body length: no *l=* tag.
     #[default]
-    All,
-    /// Sign only the body as presented: set *l=* to the actual body length.
-    OnlyMessageLength,
+    NoLimit,
+    /// Sign the entire message body as presented: set *l=* to the actual body
+    /// length.
+    MessageContent,
     /// Sign exactly the specified number of bytes of body content: set *l=* to
     /// the given value.
     Exact(u64),
 }
 
-// TODO make inherent method?
-fn convert_body_length(body_length: BodyLength) -> Result<Option<usize>, TryFromIntError> {
-    match body_length {
-        BodyLength::All | BodyLength::OnlyMessageLength => Ok(None),
-        BodyLength::Exact(n) => n.try_into().map(Some),
+impl BodyLength {
+    fn to_usize(self) -> Result<Option<usize>, TryFromIntError> {
+        match self {
+            Self::NoLimit | Self::MessageContent => Ok(None),
+            Self::Exact(n) => n.try_into().map(Some),
+        }
     }
 }
 
@@ -69,11 +71,11 @@ pub enum Timestamp {
     Exact(u64),
 }
 
-// TODO derive Default?
 /// Selection of headers to include in the h= tag.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub enum HeaderSelection {
     /// Given some `HeaderFields`, select the headers in the default set.
+    #[default]
     Auto,
     /// Use exactly the headers given here as contents of the h= tag.
     Manual(Vec<FieldName>),
@@ -148,6 +150,46 @@ pub fn default_unsigned_headers() -> Vec<FieldName> {
         .collect()
 }
 
+/// An error that occurs when preparing signing requests.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum RequestError {
+    /// Conversion from or to a requested integer data type cannot be supported
+    /// in this implementation or on the current platform.
+    Overflow,
+    MissingFromHeader,
+    TooManyRequests,
+    EmptyRequests,
+    IncompatibleKeyType,
+    FromHeaderNotSigned,
+    InvalidSignedFieldName,
+    DomainMismatch,
+    ZeroExpirationDuration,
+    InvalidExtTags,
+    InvalidDkimSignatureHeaderName,
+    InvalidIndentationWhitespace,
+}
+
+impl Display for RequestError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Overflow => write!(f, "integer too large"),
+            Self::MissingFromHeader => write!(f, "no From header"),
+            Self::TooManyRequests => write!(f, "too many sign requests"),
+            Self::EmptyRequests => write!(f, "no sign requests"),
+            Self::IncompatibleKeyType => write!(f, "incompatible key type"),
+            Self::FromHeaderNotSigned => write!(f, "From header not signed"),
+            Self::InvalidSignedFieldName => write!(f, "invalid signed header name"),
+            Self::DomainMismatch => write!(f, "domain mismatch"),
+            Self::ZeroExpirationDuration => write!(f, "zero expiration duration"),
+            Self::InvalidExtTags => write!(f, "invalid extension tags"),
+            Self::InvalidDkimSignatureHeaderName => write!(f, "invalid DKIM-Signature header name"),
+            Self::InvalidIndentationWhitespace => write!(f, "invalid indentation whitespace"),
+        }
+    }
+}
+
+impl Error for RequestError {}
+
 /// Formatting options.
 pub struct OutputFormat {
     /// The header name, must be equal to `DKIM-Signature` ignoring case.
@@ -174,34 +216,53 @@ impl Default for OutputFormat {
     }
 }
 
-// TODO SignRequest cannot derive anything? should this be clonable in some way (except for key?)
+struct ClosureDebug<'a>(&'a Box<dyn Fn(&str, &str) -> Ordering + Send + Sync>);
+
+impl fmt::Debug for ClosureDebug<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "<closure>")
+    }
+}
+
+impl fmt::Debug for OutputFormat {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OutputFormat")
+            .field("header_name", &self.header_name)
+            .field("line_width", &self.line_width)
+            .field("indentation", &self.indentation)
+            .field("tag_order", &self.tag_order.as_ref().map(ClosureDebug))
+            .finish()
+    }
+}
+
 /// A request for creation of a DKIM signature.
+#[derive(Debug)]
 pub struct SignRequest<T> {
     /// The key to use for producing the cryptographic signature.
     pub signing_key: T,
 
-    /// The signature algorithm to use in the *a=* tag. Must be compatible with
+    /// The signing algorithm to use in the *a=* tag. Must be compatible with
     /// the signing key.
-    pub algorithm: SignatureAlgorithm,
+    pub algorithm: SigningAlgorithm,
     /// The canonicalization to use in the *c=* tag.
     pub canonicalization: Canonicalization,
-    /// The selection of headers to include in the *h=* tag.
-    pub header_selection: HeaderSelection,
     /// The signing domain to use in the *d=* tag.
     pub domain: DomainName,
+    /// The selection of headers to include in the *h=* tag.
+    pub header_selection: HeaderSelection,
     /// The agent or user identifier to use in the *i=* tag.
     pub identity: Option<Identity>,
-    /// The selector to use in the *s=* tag.
-    pub selector: Selector,
     /// The strategy to use for generating the *l=* tag.
     pub body_length: BodyLength,
-    /// Whether to record all headers used to create the signature in the *z=*
-    /// tag.
-    pub copy_headers: bool,
+    /// The selector to use in the *s=* tag.
+    pub selector: Selector,
     /// The timestamp value to record in the *t=* tag.
     pub timestamp: Option<Timestamp>,
     /// The duration for which the signature will remain valid (*x=* tag).
     pub valid_duration: Option<Duration>,
+    /// Whether to record all headers used to create the signature in the *z=*
+    /// tag.
+    pub copy_headers: bool,
     /// Additional tag/value pairs to include in the signature.
     pub ext_tags: Vec<(String, String)>,
 
@@ -215,26 +276,30 @@ impl<T> SignRequest<T> {
     pub fn new(
         domain: DomainName,
         selector: Selector,
-        algorithm: SignatureAlgorithm,
+        algorithm: SigningAlgorithm,
         signing_key: T,
     ) -> Self {
-        let identity = None;
-        let header_selection = HeaderSelection::Auto;
+        // The default validity period of five days follows the traditionally
+        // recommended time for retrying message delivery; see RFC 5321, section
+        // 4.5.4.1: ‘Retries continue until the message is transmitted or the
+        // sender gives up; the give-up time generally needs to be at least 4-5
+        // days.’
+        // Five days is also used as duration in the example in RFC 6376, §3.5.
+        let five_days = Duration::from_secs(60 * 60 * 24 * 5);
 
         Self {
             signing_key,
 
             algorithm,
             canonicalization: Default::default(),
-            header_selection,
             domain,
-            identity,
+            header_selection: Default::default(),
+            identity: None,
+            body_length: BodyLength::NoLimit,
             selector,
-            body_length: BodyLength::All,
-            copy_headers: false,
             timestamp: Some(Timestamp::Now),
-            valid_duration: Some(Duration::from_secs(60 * 60 * 24 * 5)),  // five days
-            // note that five days is also used as duration in the example in §3.5
+            valid_duration: Some(five_days),
+            copy_headers: false,
             ext_tags: vec![],
 
             format: Default::default(),
@@ -242,18 +307,31 @@ impl<T> SignRequest<T> {
     }
 }
 
-fn validate_request<T: AsRef<SigningKey>>(request: &SignRequest<T>) -> Result<(), SignerError> {
+fn validate_request<T: AsRef<SigningKey>>(request: &SignRequest<T>) -> Result<(), RequestError> {
     if request.signing_key.as_ref().key_type() != request.algorithm.key_type() {
-        return Err(SignerError::IncompatibleKeyType);
+        return Err(RequestError::IncompatibleKeyType);
+    }
+
+    if let HeaderSelection::Manual(signed_headers) = &request.header_selection {
+        if !signed_headers.iter().any(|name| *name == "From") {
+            return Err(RequestError::FromHeaderNotSigned);
+        }
+        if signed_headers.iter().any(|name| name.as_ref().contains(';')) {
+            return Err(RequestError::InvalidSignedFieldName);
+        }
+    }
+
+    if let Some(identity) = &request.identity {
+        if !identity.domain_part.eq_or_subdomain_of(&request.domain) {
+            return Err(RequestError::DomainMismatch);
+        }
     }
 
     if let Some(duration) = request.valid_duration {
         if duration.as_secs() == 0 {
-            return Err(SignerError::ZeroExpirationDuration);
+            return Err(RequestError::ZeroExpirationDuration);
         }
     }
-
-    // TODO valid header selection (Manual must contain From)
 
     let mut tags_seen = HashSet::new();
     if request.ext_tags.iter().any(|(name, value)| {
@@ -262,73 +340,60 @@ fn validate_request<T: AsRef<SigningKey>>(request: &SignRequest<T>) -> Result<()
             || !tag_list::is_tag_value(value)
             || format::is_output_tag(name)
     }) {
-        return Err(SignerError::InvalidExtraTags);
+        return Err(RequestError::InvalidExtTags);
     }
 
     if !request.format.header_name.eq_ignore_ascii_case(DKIM_SIGNATURE_NAME) {
-        return Err(SignerError::InvalidDkimSignatureHeaderName);
+        return Err(RequestError::InvalidDkimSignatureHeaderName);
     }
 
     let indent = &request.format.indentation;
     if indent.is_empty() || indent.chars().any(|c| !parse::is_wsp(c)) {
-        return Err(SignerError::InvalidIndentationWhitespace);
+        return Err(RequestError::InvalidIndentationWhitespace);
     }
 
     Ok(())
 }
 
-/// An error that occurs when using a signer.
-#[derive(Debug, PartialEq, Eq)]
-pub enum SignerError {
+/// An error that occurs when performing signing.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum SigningError {
     /// Conversion from or to a requested integer data type cannot be supported
     /// in this implementation or on the current platform.
     Overflow,
-    TooManyRequests,
-    EmptyRequests,
-    ZeroExpirationDuration,
-    InvalidExtraTags,
-    InvalidDkimSignatureHeaderName,
-    InvalidIndentationWhitespace,
-    FromHeaderNotSigned,
-    InvalidSignedFieldName,
-    MissingFromHeader,
-    IncompatibleKeyType,
-    InsufficientBodyLength,
+    InsufficientContent,
     SigningFailure,
 }
 
-// TODO
-impl Display for SignerError {
+impl Display for SigningError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "signer error")
+        match self {
+            Self::Overflow => write!(f, "integer too large"),
+            Self::InsufficientContent => write!(f, "not enough message body content"),
+            Self::SigningFailure => write!(f, "signing failed"),
+        }
     }
 }
 
-impl Error for SignerError {}
+impl Error for SigningError {}
 
-// TODO names: Sign{,er,ing}? Result/Output?
-// introduce alias: type SigningResult = Result<SignResult, SignerError>;
-// or still use an own type for Result<SR, SE>? Compare with VerificationStatus?
-
-struct SignResultHeaderDisplay<'a> {
+struct SigningResultHeaderDisplay<'a> {
     name: &'a str,
     value: &'a str,
 }
 
-impl Display for SignResultHeaderDisplay<'_> {
+impl Display for SigningResultHeaderDisplay<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.name, self.value)
     }
 }
 
-// TODO rename SigningResult? cf. VerificationResult
-
 /// A successful signing result.
 ///
 /// The header name and value must be concatenated with only a colon character
-/// in between, no additional whitespace; use [`SignResult::format_header`].
-#[derive(Debug, PartialEq)]
-pub struct SignResult {
+/// in between, no additional whitespace; use [`SigningResult::format_header`].
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct SigningResult {
     /// The *DKIM-Signature* header name.
     pub header_name: String,
     /// The *DKIM-Signature* header value. Continuation lines use CRLF line
@@ -338,11 +403,11 @@ pub struct SignResult {
     pub signature: DkimSignature,
 }
 
-impl SignResult {
+impl SigningResult {
     /// Produces a formatted header, consisting of name, colon, and value. The
     /// output uses CRLF line endings.
     pub fn format_header(&self) -> impl Display + '_ {
-        SignResultHeaderDisplay {
+        SigningResultHeaderDisplay {
             name: &self.header_name,
             value: &self.header_value,
         }
@@ -353,7 +418,7 @@ impl SignResult {
     /// # Panics
     ///
     /// Panics if the result’s header name and value are not a well-formed
-    /// header field. (`SignResult` output produced by `Signer` is always
+    /// header field. (`SigningResult` output produced by `Signer` is always
     /// well-formed and therefore calling this method on such values does not
     /// panic.)
     pub fn to_header_field(&self) -> HeaderField {
@@ -366,7 +431,6 @@ impl SignResult {
 
 struct SignerTask<T> {
     request: SignRequest<T>,
-    error: Option<SignerError>,
 }
 
 /// A signer for an email message.
@@ -406,7 +470,7 @@ struct SignerTask<T> {
 ///
 /// let domain = DomainName::new("example.com")?;
 /// let selector = Selector::new("selector")?;
-/// let algorithm = SignatureAlgorithm::Ed25519Sha256;
+/// let algorithm = SigningAlgorithm::Ed25519Sha256;
 /// let signing_key = SigningKey::from_pkcs8_pem(
 ///     "-----BEGIN PRIVATE KEY-----\n\
 ///     MC4CAQAwBQYDK2VwBCIEIH1M+KJ5Nln5QmygpruhNrykdHC9AwB8B7ACiiWMp/tQ\n\
@@ -449,12 +513,17 @@ where
     T: AsRef<SigningKey>,
 {
     /// Prepares a message signing process.
-    pub fn prepare_signing<I>(headers: HeaderFields, requests: I) -> Result<Self, SignerError>
+    ///
+    /// # Errors
+    ///
+    /// If the given arguments including any of the requests cannot be used for
+    /// signing, an error is returned.
+    pub fn prepare_signing<I>(headers: HeaderFields, requests: I) -> Result<Self, RequestError>
     where
         I: IntoIterator<Item = SignRequest<T>>,
     {
         if !headers.as_ref().iter().any(|(name, _)| *name == "From") {
-            return Err(SignerError::MissingFromHeader);
+            return Err(RequestError::MissingFromHeader);
         }
 
         let mut tasks = vec![];
@@ -462,41 +531,25 @@ where
 
         for (i, request) in requests.into_iter().enumerate() {
             if i >= 10 {
-                return Err(SignerError::TooManyRequests);
+                return Err(RequestError::TooManyRequests);
             }
 
             // eagerly validate requests and abort entire procedure if any are unusable
             validate_request(&request)?;
 
-            // TODO check that From is in signed headers, does not contain ; here already?
+            let body_length = request.body_length.to_usize().map_err(|_| RequestError::Overflow)?;
 
-            // TODO check identity domain is subdomain of signing domain
-
-            let body_length = match convert_body_length(request.body_length) {
-                Ok(b) => b,
-                Err(_) => {
-                    let task = SignerTask {
-                        request,
-                        error: Some(SignerError::Overflow),
-                    };
-                    tasks.push(task);
-                    continue;
-                }
-            };
             let hash_alg = request.algorithm.hash_algorithm();
             let canon_kind = request.canonicalization.body;
             body_hasher.register_canonicalization(body_length, hash_alg, canon_kind);
 
-            let task = SignerTask {
-                request,
-                error: None,
-            };
+            let task = SignerTask { request };
 
             tasks.push(task);
         }
 
         if tasks.is_empty() {
-            return Err(SignerError::EmptyRequests);
+            return Err(RequestError::EmptyRequests);
         }
 
         Ok(Self {
@@ -540,17 +593,12 @@ where
     /// Performs the actual signing and returns the resulting signatures.
     ///
     /// The returned result vector is never empty.
-    pub async fn sign(self) -> Vec<Result<SignResult, SignerError>> {
+    pub async fn sign(self) -> Vec<Result<SigningResult, SigningError>> {
         let hasher_results = self.body_hasher.finish();
 
         let mut result = vec![];
 
         for task in self.tasks {
-            if let Some(error) = task.error {
-                result.push(Err(error));
-                continue;
-            }
-
             let request = task.request;
 
             let signing_result =

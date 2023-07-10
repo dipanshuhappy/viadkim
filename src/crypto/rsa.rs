@@ -22,16 +22,20 @@ use rsa::{
 #[cfg(feature = "pre-rfc8301")]
 use sha1::Sha1;
 use sha2::Sha256;
+use std::error::Error;
 
 pub fn get_public_key_size(k: &RsaPublicKey) -> usize {
     k.size() * 8
 }
 
+/// Reads an RSA public key from the given slice of bytes for verification.
 pub fn read_rsa_public_key(key_data: &[u8]) -> Result<RsaPublicKey, VerificationError> {
-    // first try reading data as SubjectPublicKeyInfo
-    // (*de facto* procedure, as shown in examples in appendix of RFC)
-    // then try reading data as RSAPublicKey
-    // (what was actually specified in RFC, but not what is in appendix)
+    // First try reading the bytes as *SubjectPublicKeyInfo* format
+    // (the de facto procedure, as shown in examples in appendix C of RFC 6376).
+    // Then try reading the bytes as *RSAPublicKey* format
+    // (what was actually specified in the RFC).
+    // See the module comment in `viadkim::crypto`.
+
     let public_key = RsaPublicKey::from_public_key_der(key_data)
         .or_else(|_| RsaPublicKey::from_pkcs1_der(key_data))
         .map_err(|_| VerificationError::InvalidKey)?;
@@ -45,24 +49,30 @@ pub fn read_rsa_public_key(key_data: &[u8]) -> Result<RsaPublicKey, Verification
     Ok(public_key)
 }
 
+/// Verifies an RSA signature for a given message byte slice.
+///
+/// # Errors
+///
+/// A failing verification will ultimately produce an error provided by the
+/// underlying library. It is returned as a boxed `dyn Error`. If instead a
+/// [`VerificationError`][crate::crypto::VerificationError] is desired, the
+/// variant `VerificationError::VerificationFailure` should be used.
 pub fn verify_rsa(
-    hash_alg: HashAlgorithm,
     public_key: &RsaPublicKey,
+    hash_alg: HashAlgorithm,
     msg: &[u8],
     signature_data: &[u8],
-) -> Result<(), VerificationError> {
-    let result = match hash_alg {
+) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    match hash_alg {
         HashAlgorithm::Sha256 => {
-            public_key.verify(Pkcs1v15Sign::new::<Sha256>(), msg, signature_data)
+            public_key.verify(Pkcs1v15Sign::new::<Sha256>(), msg, signature_data)?;
         }
         #[cfg(feature = "pre-rfc8301")]
         HashAlgorithm::Sha1 => {
-            public_key.verify(Pkcs1v15Sign::new::<Sha1>(), msg, signature_data)
+            public_key.verify(Pkcs1v15Sign::new::<Sha1>(), msg, signature_data)?;
         }
     };
-
-    // TODO consider recording rsa crypto error somewhere
-    result.map_err(|_e| VerificationError::VerificationFailure)
+    Ok(())
 }
 
 pub fn sign_rsa(
@@ -88,7 +98,6 @@ mod tests {
     #[test]
     fn make_rsa2048_key() {
         use rsa::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
-        use tracing::debug;
 
         let mut rng = rand::thread_rng();
 
@@ -97,11 +106,11 @@ mod tests {
         let public_key = RsaPublicKey::from(&private_key);
 
         let s = public_key.to_public_key_pem(Default::default()).unwrap();
-        debug!("pub: {s}");
+        //dbg!("pub: {s}");
 
         let s = private_key.to_pkcs8_pem(Default::default()).unwrap();
         let s: &str = s.as_ref();
-        debug!("sec: {s}");
+        //dbg!("sec: {s}");
     }
     */
 

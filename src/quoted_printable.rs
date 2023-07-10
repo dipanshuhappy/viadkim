@@ -20,7 +20,10 @@
 
 use crate::parse::{is_wsp, strip_fws, strip_suffix};
 use bstr::ByteVec;
-use std::fmt::Write;
+use std::{
+    error::Error,
+    fmt::{self, Display, Formatter, Write},
+};
 
 /// Encodes bytes as a DKIM-Quoted-Printable string.
 pub fn encode(mut bytes: &[u8], encode_bar: bool) -> String {
@@ -45,8 +48,16 @@ pub fn encode(mut bytes: &[u8], encode_bar: bool) -> String {
     result
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct QuotedPrintableError;
+
+impl Display for QuotedPrintableError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "failed to decode Quoted-Printable data")
+    }
+}
+
+impl Error for QuotedPrintableError {}
 
 /// Decodes the bytes in a DKIM-Quoted-Printable-encoded string.
 pub fn decode(mut s: &str) -> Result<Vec<u8>, QuotedPrintableError> {

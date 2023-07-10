@@ -20,7 +20,7 @@ use crate::{
     message_hash,
     signature::DkimSignature,
     tag_list,
-    verifier::VerifierError,
+    verifier::VerificationError,
 };
 use std::{borrow::Cow, str};
 use tracing::trace;
@@ -31,7 +31,7 @@ pub fn perform_verification(
     sig: &DkimSignature,
     name: &str,
     value: &str,
-) -> Result<(), VerifierError> {
+) -> Result<(), VerificationError> {
     let hash_alg = sig.algorithm.hash_algorithm();
 
     let original_dkim_sig = make_original_dkim_sig(value);
@@ -91,17 +91,19 @@ fn verify_signature(
     hash_alg: HashAlgorithm,
     data_hash: &[u8],
     signature_data: &[u8],
-) -> Result<(), VerifierError> {
+) -> Result<(), VerificationError> {
     match public_key {
         VerifyingKey::Rsa(pk) => {
-            match crypto::verify_rsa(hash_alg, pk, data_hash, signature_data) {
+            match crypto::verify_rsa(pk, hash_alg, data_hash, signature_data) {
                 Ok(()) => {
                     trace!("RSA public key verification successful");
                     Ok(())
                 }
                 Err(e) => {
+                    // Log info about the error cause, and return an opaque
+                    // `crypto::VerificationError`.
                     trace!("RSA public key verification failed: {e}");
-                    Err(VerifierError::VerificationFailure(e))
+                    Err(VerificationError::VerificationFailure(crypto::VerificationError::VerificationFailure))
                 }
             }
         }
@@ -112,8 +114,10 @@ fn verify_signature(
                     Ok(())
                 }
                 Err(e) => {
+                    // Log info about the error cause, and return an opaque
+                    // `crypto::VerificationError`.
                     trace!("Ed25519 public key verification failed: {e}");
-                    Err(VerifierError::VerificationFailure(e))
+                    Err(VerificationError::VerificationFailure(crypto::VerificationError::VerificationFailure))
                 }
             }
         }

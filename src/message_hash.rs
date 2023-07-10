@@ -22,7 +22,11 @@ use crate::{
     header::{FieldName, HeaderFields},
     signature::{CanonicalizationAlgorithm, DkimSignature, DKIM_SIGNATURE_NAME},
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    fmt::{self, Display, Formatter},
+};
 
 pub fn compute_data_hash(
     hash_alg: HashAlgorithm,
@@ -80,6 +84,7 @@ pub fn body_hasher_key(sig: &DkimSignature) -> BodyHasherKey {
     (body_len, hash_alg, canon_kind)
 }
 
+#[derive(Clone)]
 pub struct BodyHasherBuilder {
     fail_on_truncate: bool,  // truncated inputs must yield InputTruncated
     registrations: HashSet<BodyHasherKey>,
@@ -103,6 +108,8 @@ impl BodyHasherBuilder {
     }
 
     pub fn build(self) -> BodyHasher {
+        use CanonicalizationAlgorithm::*;
+
         let hashers = self
             .registrations
             .into_iter()
@@ -112,8 +119,8 @@ impl BodyHasherBuilder {
         BodyHasher {
             fail_on_truncate: self.fail_on_truncate,
             hashers,
-            canonicalizer_simple: BodyCanonicalizer::simple(),
-            canonicalizer_relaxed: BodyCanonicalizer::relaxed(),
+            canonicalizer_simple: BodyCanonicalizer::new(Simple),
+            canonicalizer_relaxed: BodyCanonicalizer::new(Relaxed),
         }
     }
 }
@@ -145,9 +152,9 @@ impl BodyHasher {
         for ((_, _, canon), (hasher, truncated)) in active_hashers {
             let canonicalized_chunk = match canon {
                 CanonicalizationAlgorithm::Simple => canonicalized_chunk_simple
-                    .get_or_insert_with(|| self.canonicalizer_simple.canon_chunk(chunk)),
+                    .get_or_insert_with(|| self.canonicalizer_simple.canonicalize_chunk(chunk)),
                 CanonicalizationAlgorithm::Relaxed => canonicalized_chunk_relaxed
-                    .get_or_insert_with(|| self.canonicalizer_relaxed.canon_chunk(chunk)),
+                    .get_or_insert_with(|| self.canonicalizer_relaxed.canonicalize_chunk(chunk)),
             };
 
             match hasher.update(canonicalized_chunk) {
@@ -169,9 +176,9 @@ impl BodyHasher {
         }
     }
 
-    pub fn finish(self) -> BodyHasherResults {
-        let mut finish_canonicalization_simple = Some(|| self.canonicalizer_simple.finish_canon());
-        let mut finish_canonicalization_relaxed = Some(|| self.canonicalizer_relaxed.finish_canon());
+    pub fn finish(self) -> BodyHashResults {
+        let mut finish_canonicalization_simple = Some(|| self.canonicalizer_simple.finish());
+        let mut finish_canonicalization_relaxed = Some(|| self.canonicalizer_relaxed.finish());
         let mut canonicalized_chunk_simple = None;
         let mut canonicalized_chunk_relaxed = None;
 
@@ -200,32 +207,44 @@ impl BodyHasher {
             }
 
             let res = if self.fail_on_truncate && truncated {
-                Err(BodyHasherError::InputTruncated)
+                Err(BodyHashError::InputTruncated)
             } else {
-                hasher.finish().map_err(|InsufficientInput| BodyHasherError::InsufficientInput)
+                hasher.finish().map_err(|InsufficientInput| BodyHashError::InsufficientInput)
             };
 
             results.insert(key, res);
         }
 
-        BodyHasherResults { results }
+        BodyHashResults { results }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum BodyHasherError {
+pub enum BodyHashError {
     InsufficientInput,
     InputTruncated,
 }
 
-pub type BodyHasherResult = Result<(Box<[u8]>, usize), BodyHasherError>;
-
-pub struct BodyHasherResults {
-    results: HashMap<BodyHasherKey, BodyHasherResult>,
+impl Display for BodyHashError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InsufficientInput => write!(f, "insufficient input data"),
+            Self::InputTruncated => write!(f, "input not digested entirely"),
+        }
+    }
 }
 
-impl BodyHasherResults {
-    pub fn get(&self, key: &BodyHasherKey) -> Option<&BodyHasherResult> {
+impl Error for BodyHashError {}
+
+pub type BodyHashResult = Result<(Box<[u8]>, usize), BodyHashError>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BodyHashResults {
+    results: HashMap<BodyHasherKey, BodyHashResult>,
+}
+
+impl BodyHashResults {
+    pub fn get(&self, key: &BodyHasherKey) -> Option<&BodyHashResult> {
         self.results.get(key)
     }
 }
@@ -233,7 +252,7 @@ impl BodyHasherResults {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64ct::{Base64, Encoding};
+    use crate::util;
     use bstr::ByteSlice;
 
     fn key_simple() -> BodyHasherKey {
@@ -287,7 +306,7 @@ mod tests {
         let results = hasher.finish();
 
         let res1 = results.get(&key1).unwrap();
-        assert_eq!(res1, &Err(BodyHasherError::InputTruncated));
+        assert_eq!(res1, &Err(BodyHashError::InputTruncated));
     }
 
     #[test]
@@ -339,7 +358,7 @@ David
 
         let res1 = results.get(&key1).unwrap();
         assert_eq!(
-            Base64::encode_string(&res1.as_ref().unwrap().0),
+            util::encode_base64(&res1.as_ref().unwrap().0),
             "RMSbeRTj/zCxWeWQXpEIbiqxH0Jqg5eYs4ORzOt3MT0="
         );
     }

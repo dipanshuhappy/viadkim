@@ -19,26 +19,47 @@
 use crate::{
     crypto::{HashAlgorithm, KeyType},
     tag_list::{self, TagList, TagSpec},
-    util::Base64Debug,
+    util::{Base64Debug, CanonicalStr},
 };
 use std::{
+    error::Error,
     fmt::{self, Display, Formatter},
     str::FromStr,
 };
 
-// TODO Debug impls!
-
 /// Service types to which a DKIM public key record applies.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
 pub enum ServiceType {
     /// Service type <em>*</em>.
+    #[default]
     Any,
     /// Service type *email*.
     Email,
 }
 
+impl CanonicalStr for ServiceType {
+    fn canonical_str(&self) -> &'static str {
+        match self {
+            Self::Any => "*",
+            Self::Email => "email",
+        }
+    }
+}
+
+impl Display for ServiceType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(self.canonical_str())
+    }
+}
+
+impl fmt::Debug for ServiceType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
 /// Flags set on a DKIM public key record.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub enum SelectorFlag {
     /// The *y* flag.
     Testing,
@@ -46,50 +67,74 @@ pub enum SelectorFlag {
     NoSubdomains,
 }
 
-// TODO Rename DkimKeyRecordError[Kind], b/c not just 'parse'? (cf. DkimSignatureError)
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DkimKeyRecordParseError {
-    RecordSyntax,  // fundamental syntax errors such as DNS record format or invalid UTF-8 data
-    InvalidQuotedPrintable,
-    InvalidBase64,
-    TagListSyntax,
-    UnsupportedVersion,
-    MisplacedVersionTag,
-    UnsupportedKeyType,
-    InvalidHashAlgorithm,
-    NoSupportedHashAlgorithms,
-    RevokedKey,
-    MissingKeyTag,
-    InvalidServiceType,
-    NoSupportedServiceTypes,
-    InvalidFlag,
-}
-
-impl Display for DkimKeyRecordParseError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl CanonicalStr for SelectorFlag {
+    fn canonical_str(&self) -> &'static str {
         match self {
-            Self::RecordSyntax => write!(f, "ill-formed key record"),
-            Self::InvalidQuotedPrintable => write!(f, "invalid Quoted-Printable string"),
-            Self::InvalidBase64 => write!(f, "invalid Base64 string"),
-            Self::TagListSyntax => write!(f, "invalid tag-list"),
-            Self::UnsupportedVersion => write!(f, "unsupported version"),
-            Self::MisplacedVersionTag => write!(f, "v= tag not initial"),
-            Self::UnsupportedKeyType => write!(f, "unsupported key type"),
-            Self::InvalidHashAlgorithm => write!(f, "invalid hash algorithm type"),
-            Self::NoSupportedHashAlgorithms => write!(f, "no supported hash algorithms"),
-            Self::RevokedKey => write!(f, "key revoked"),
-            Self::MissingKeyTag => write!(f, "p= tag missing"),
-            Self::InvalidServiceType => write!(f, "invalid service type"),
-            Self::NoSupportedServiceTypes => write!(f, "no supported service types"),
-            Self::InvalidFlag => write!(f, "invalid flag"),
+            Self::Testing => "y",
+            Self::NoSubdomains => "s",
         }
     }
 }
 
+impl Display for SelectorFlag {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(self.canonical_str())
+    }
+}
+
+impl fmt::Debug for SelectorFlag {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
+/// An error that occurs when parsing a DKIM public key record for further
+/// processing.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum DkimKeyRecordError {
+    /// Fundamental syntax errors such as DNS record format or invalid UTF-8
+    /// data in record.
+    RecordFormat,
+    TagListFormat,
+    MisplacedVersionTag,
+    IncompatibleVersion,
+    InvalidHashAlgorithm,
+    NoSupportedHashAlgorithms,
+    UnsupportedKeyType,
+    InvalidQuotedPrintable,
+    InvalidBase64,
+    InvalidServiceType,
+    NoSupportedServiceTypes,
+    InvalidFlag,
+    MissingKeyTag,
+}
+
+impl Display for DkimKeyRecordError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RecordFormat => write!(f, "ill-formed key record"),
+            Self::TagListFormat => write!(f, "ill-formed tag list"),
+            Self::MisplacedVersionTag => write!(f, "v= tag not initial"),
+            Self::IncompatibleVersion => write!(f, "incompatible version"),
+            Self::InvalidHashAlgorithm => write!(f, "invalid hash algorithm"),
+            Self::NoSupportedHashAlgorithms => write!(f, "no supported hash algorithms"),
+            Self::UnsupportedKeyType => write!(f, "unsupported key type"),
+            Self::InvalidQuotedPrintable => write!(f, "invalid Quoted-Printable string"),
+            Self::InvalidBase64 => write!(f, "invalid Base64 string"),
+            Self::InvalidServiceType => write!(f, "invalid service type"),
+            Self::NoSupportedServiceTypes => write!(f, "no supported service types"),
+            Self::InvalidFlag => write!(f, "invalid flag"),
+            Self::MissingKeyTag => write!(f, "p= tag missing"),
+        }
+    }
+}
+
+impl Error for DkimKeyRecordError {}
+
 /// A DKIM public key record.
 ///
 /// The *v=* tag (always 1) is not included.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct DkimKeyRecord {
     /// The *h=* tag.
     pub hash_algorithms: Box<[HashAlgorithm]>,  // non-empty
@@ -112,7 +157,7 @@ impl DkimKeyRecord {
     // (like `HashAlgorithm` or `ServiceType`), unrecognised items are ignored
     // and not part of the final parsed result.
 
-    fn from_tag_list(tag_list: &TagList<'_>) -> Result<Self, DkimKeyRecordParseError> {
+    fn from_tag_list(tag_list: &TagList<'_>) -> Result<Self, DkimKeyRecordError> {
         let mut hash_algorithms = None;
         let mut key_type = None;
         let mut notes = None;
@@ -125,10 +170,10 @@ impl DkimKeyRecord {
             match name {
                 "v" => {
                     if i != 0 {
-                        return Err(DkimKeyRecordParseError::MisplacedVersionTag);
+                        return Err(DkimKeyRecordError::MisplacedVersionTag);
                     }
                     if value != "DKIM1" {
-                        return Err(DkimKeyRecordParseError::UnsupportedVersion);
+                        return Err(DkimKeyRecordError::IncompatibleVersion);
                     }
                 }
                 "h" => {
@@ -136,7 +181,7 @@ impl DkimKeyRecord {
 
                     for s in tag_list::parse_colon_separated_value(value) {
                         if s.is_empty() {
-                            return Err(DkimKeyRecordParseError::InvalidHashAlgorithm);
+                            return Err(DkimKeyRecordError::InvalidHashAlgorithm);
                         }
 
                         if s.eq_ignore_ascii_case("sha256") {
@@ -150,7 +195,7 @@ impl DkimKeyRecord {
                     }
 
                     if algs.is_empty() {
-                        return Err(DkimKeyRecordParseError::NoSupportedHashAlgorithms);
+                        return Err(DkimKeyRecordError::NoSupportedHashAlgorithms);
                     }
 
                     hash_algorithms = Some(algs.into());
@@ -161,12 +206,12 @@ impl DkimKeyRecord {
                     } else if value.eq_ignore_ascii_case("ed25519") {
                         key_type = Some(KeyType::Ed25519);
                     } else {
-                        return Err(DkimKeyRecordParseError::UnsupportedKeyType);
+                        return Err(DkimKeyRecordError::UnsupportedKeyType);
                     }
                 }
                 "n" => {
                     let s = tag_list::parse_qp_section_value(value)
-                        .map_err(|_| DkimKeyRecordParseError::InvalidQuotedPrintable)?;
+                        .map_err(|_| DkimKeyRecordError::InvalidQuotedPrintable)?;
 
                     // §3.6.1: ‘Notes that might be of interest to a human’. It
                     // seems therefore justified to support only well-formed
@@ -176,12 +221,8 @@ impl DkimKeyRecord {
                     notes = Some(value.into());
                 }
                 "p" => {
-                    if value.is_empty() {
-                        return Err(DkimKeyRecordParseError::RevokedKey);
-                    }
-
                     let s = tag_list::parse_base64_value(value)
-                        .map_err(|_| DkimKeyRecordParseError::InvalidBase64)?;
+                        .map_err(|_| DkimKeyRecordError::InvalidBase64)?;
 
                     key_data = Some(s.into());
                 }
@@ -190,7 +231,7 @@ impl DkimKeyRecord {
 
                     for s in tag_list::parse_colon_separated_value(value) {
                         if s.is_empty() {
-                            return Err(DkimKeyRecordParseError::InvalidServiceType);
+                            return Err(DkimKeyRecordError::InvalidServiceType);
                         }
 
                         if s == "*" {
@@ -201,7 +242,7 @@ impl DkimKeyRecord {
                     }
 
                     if st.is_empty() {
-                        return Err(DkimKeyRecordParseError::NoSupportedServiceTypes);
+                        return Err(DkimKeyRecordError::NoSupportedServiceTypes);
                     }
 
                     service_types = Some(st.into());
@@ -211,7 +252,7 @@ impl DkimKeyRecord {
 
                     for s in tag_list::parse_colon_separated_value(value) {
                         if s.is_empty() {
-                            return Err(DkimKeyRecordParseError::InvalidFlag);
+                            return Err(DkimKeyRecordError::InvalidFlag);
                         }
 
                         if s.eq_ignore_ascii_case("y") {
@@ -229,7 +270,7 @@ impl DkimKeyRecord {
             }
         }
 
-        let key_data = key_data.ok_or(DkimKeyRecordParseError::MissingKeyTag)?;
+        let key_data = key_data.ok_or(DkimKeyRecordError::MissingKeyTag)?;
 
         let hash_algorithms = hash_algorithms.unwrap_or_else(|| HashAlgorithm::all().into());
         let key_type = key_type.unwrap_or(KeyType::Rsa);
@@ -255,15 +296,10 @@ impl DkimKeyRecord {
 }
 
 impl FromStr for DkimKeyRecord {
-    type Err = DkimKeyRecordParseError;
+    type Err = DkimKeyRecordError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let tag_list = match TagList::from_str(s) {
-            Ok(r) => r,
-            Err(_e) => {
-                return Err(DkimKeyRecordParseError::TagListSyntax);
-            }
-        };
+        let tag_list = TagList::from_str(s).map_err(|_| DkimKeyRecordError::TagListFormat)?;
 
         Self::from_tag_list(&tag_list)
     }

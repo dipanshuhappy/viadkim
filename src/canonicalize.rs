@@ -29,7 +29,7 @@ const LF: u8 = b'\n';
 const CRLF: [u8; 2] = [CR, LF];
 
 // which state are we in = what did we see last?
-#[derive(Copy, Clone)]
+#[derive(Clone, Copy)]
 enum CanonState {
     Init,
     CrLf,
@@ -40,6 +40,7 @@ enum CanonState {
 }
 
 /// A canonicalizer using the body canonicalization algorithm.
+#[derive(Clone)]
 pub struct BodyCanonicalizer {
     kind: CanonicalizationAlgorithm,
     state: CanonState,
@@ -48,15 +49,6 @@ pub struct BodyCanonicalizer {
 }
 
 impl BodyCanonicalizer {
-    // TODO reconsider: convenience ctors needed?
-    pub fn simple() -> Self {
-        Self::new(CanonicalizationAlgorithm::Simple)
-    }
-
-    pub fn relaxed() -> Self {
-        Self::new(CanonicalizationAlgorithm::Relaxed)
-    }
-
     pub fn new(kind: CanonicalizationAlgorithm) -> Self {
         Self {
             kind,
@@ -68,7 +60,7 @@ impl BodyCanonicalizer {
 
     // canonicalisation recognises only CRLF as line separator/terminator, stray
     // CR and LF are treated like other bytes
-    pub fn canon_chunk(&mut self, bytes: &[u8]) -> Vec<u8> {
+    pub fn canonicalize_chunk(&mut self, bytes: &[u8]) -> Vec<u8> {
         match self.kind {
             CanonicalizationAlgorithm::Simple => self.canon_chunk_simple(bytes),
             CanonicalizationAlgorithm::Relaxed => self.canon_chunk_relaxed(bytes),
@@ -215,7 +207,7 @@ impl BodyCanonicalizer {
         result
     }
 
-    pub fn finish_canon(mut self) -> Vec<u8> {
+    pub fn finish(mut self) -> Vec<u8> {
         match self.kind {
             CanonicalizationAlgorithm::Simple => {
                 match self.state {
@@ -273,7 +265,7 @@ impl BodyCanonicalizer {
 
 /// Produces the header canonicalization result for some header fields.
 pub fn canonicalize_headers(
-    canon_alg: CanonicalizationAlgorithm,
+    algorithm: CanonicalizationAlgorithm,
     headers: &HeaderFields,
     selected_headers: &[FieldName],
 ) -> Vec<u8> {
@@ -289,7 +281,7 @@ pub fn canonicalize_headers(
             .filter(|(i, _)| !processed_indexes.contains(i))
         {
             if name == selected_header {
-                canonicalize_header(&mut result, canon_alg, name, val);
+                canonicalize_header(&mut result, algorithm, name, val);
 
                 result.extend(CRLF);
 
@@ -408,7 +400,7 @@ mod tests {
 
     #[test]
     fn body_canon_simple_ok() {
-        let bc = BodyCanonicalizer::simple();
+        let bc = BodyCanonicalizer::new(CanonicalizationAlgorithm::Simple);
 
         let body = canonicalize_chunks(
             bc,
@@ -420,7 +412,7 @@ mod tests {
 
     #[test]
     fn body_canon_relaxed_basic() {
-        let bc = BodyCanonicalizer::relaxed();
+        let bc = BodyCanonicalizer::new(CanonicalizationAlgorithm::Relaxed);
 
         let body = canonicalize_chunks(
             bc,
@@ -432,7 +424,7 @@ mod tests {
 
     #[test]
     fn body_canon_relaxed_small_chunks() {
-        let bc = BodyCanonicalizer::relaxed();
+        let bc = BodyCanonicalizer::new(CanonicalizationAlgorithm::Relaxed);
 
         let body = canonicalize_chunks(
             bc,
@@ -451,7 +443,7 @@ mod tests {
 
     #[test]
     fn body_canon_relaxed_initial_empty_lines() {
-        let bc = BodyCanonicalizer::relaxed();
+        let bc = BodyCanonicalizer::new(CanonicalizationAlgorithm::Relaxed);
 
         let body = canonicalize_chunks(bc, &[b"\r\n\r\n", b"\ra \r", b"\nb  ", b"c"]);
 
@@ -461,9 +453,9 @@ mod tests {
     fn canonicalize_chunks(mut bc: BodyCanonicalizer, chunks: &[&[u8]]) -> Vec<u8> {
         let mut result = vec![];
         for c in chunks {
-            result.extend(bc.canon_chunk(c));
+            result.extend(bc.canonicalize_chunk(c));
         }
-        result.extend(bc.finish_canon());
+        result.extend(bc.finish());
         result
     }
 }

@@ -19,25 +19,40 @@
 use crate::{
     header::FieldName,
     parse::{rstrip_fws, strip_fws, strip_suffix},
-    quoted_printable,
+    quoted_printable, util,
 };
-use base64ct::{Base64, Encoding};
-use std::{collections::HashSet, str};
+use std::{
+    collections::HashSet,
+    error::Error,
+    fmt::{self, Display, Formatter},
+    str,
+};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TagListParseError {
     DuplicateTag,
     Syntax,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+impl Display for TagListParseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateTag => write!(f, "duplicate tag"),
+            Self::Syntax => write!(f, "ill-formed tag list"),
+        }
+    }
+}
+
+impl Error for TagListParseError {}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TagSpec<'a> {
     pub name: &'a str,
     pub value: &'a str,
 }
 
 /// A list of well-formed tag=value pairs with unique tag names.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct TagList<'a>(Vec<TagSpec<'a>>);
 
 impl<'a> AsRef<[TagSpec<'a>]> for TagList<'a> {
@@ -152,7 +167,7 @@ pub fn parse_base64_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
 
     let value = strip_fws_from_tag_value(value);
 
-    Base64::decode_vec(&value).map_err(|_| TagListParseError::Syntax)
+    util::decode_base64(&value).map_err(|_| TagListParseError::Syntax)
 }
 
 pub fn parse_qp_section_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
