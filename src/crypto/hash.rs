@@ -50,14 +50,14 @@ pub enum HashStatus {
 
 /// A hasher that keeps track of how many bytes it has digested.
 pub struct CountingHasher {
-    digest: Box<dyn digest::DynDigest + Send>,
+    digest: Box<dyn digest::DynDigest + Send + Sync>,
     length: Option<usize>,
     bytes_written: usize,
 }
 
 impl CountingHasher {
     pub fn new(alg: HashAlgorithm, length: Option<usize>) -> Self {
-        let digest: Box<dyn digest::DynDigest + Send> = match alg {
+        let digest: Box<dyn digest::DynDigest + Send + Sync> = match alg {
             HashAlgorithm::Sha256 => Box::new(Sha256::default()),
             #[cfg(feature = "pre-rfc8301")]
             HashAlgorithm::Sha1 => Box::new(Sha1::default()),

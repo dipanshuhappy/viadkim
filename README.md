@@ -4,22 +4,23 @@
 
 ***in development***
 
+*status: complete – being refined, awaiting initial release*
+
 🏗
 
-<br>
-
-TODO
-
-The **viadkim** library contains a complete implementation of DomainKeys
-Identified Mail (DKIM). DKIM is specified in [RFC 6376].
+The **viadkim** library contains a complete implementation of *DomainKeys
+Identified Mail* (DKIM). DKIM is specified in [RFC 6376].
 
 This library provides both high-level APIs for signing and verifying email
 messages, as well as the low-level APIs used to implement this functionality. It
-is an asynchronous library based on the Tokio async runtime.
+is an asynchronous library based on the [Tokio] async runtime.
 
-This library is developed independently from scratch, by following the RFC
+This library is developed independently from scratch by following the RFC
 specification and related documents. The design objectives sketched below are
 used to guide development.
+
+[RFC 6376]: https://www.rfc-editor.org/rfc/rfc6376
+[Tokio]: https://tokio.rs
 
 ## Design objectives
 
@@ -49,8 +50,6 @@ mentioned, but also, for example, more recent recommendations for supported
 signing algorithms such as addition of *ed25519-sha256* and retirement of
 *rsa-sha1* are adopted.
 
-[RFC 6376]: https://www.rfc-editor.org/rfc/rfc6376
-
 ## Usage
 
 TODO
@@ -68,6 +67,8 @@ The feature `pre-rfc8301` reverts cryptographic algorithm and key usage back to
 before [RFC 8301]: it allows use of RSA key sizes below 1024 bits, and enables
 support for the insecure, historic SHA-1 algorithm. Use of this feature is
 strongly discouraged.
+
+The minimum supported Rust version is 1.65.0.
 
 [RFC 8301]: https://www.rfc-editor.org/rfc/rfc8301
 
@@ -108,7 +109,7 @@ Edit these examples to experiment with various configuration options.
 ## Acknowledgments
 
 While this is an independent implementation of DKIM that was created from
-scratch, the author wants to give credit to the [OpenDKIM] project. As a
+scratch, the author wishes to give credit to the [OpenDKIM] project. As a
 long-time user of OpenDKIM, some design choices made here were inspired by it.
 For example, the ‘staged’ design, which does not require that the whole message
 reside in memory at once, is inspired from OpenDKIM.

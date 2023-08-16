@@ -290,7 +290,7 @@ impl DkimKeyRecord {
     }
 
     /// Returns true if this key record is flagged *t=y*, false otherwise.
-    pub fn is_testing_mode(&self) -> bool {
+    pub fn is_testing(&self) -> bool {
         self.flags.contains(&SelectorFlag::Testing)
     }
 }

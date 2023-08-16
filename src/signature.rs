@@ -668,6 +668,7 @@ pub struct DkimSignatureError {
     /// The error kind that caused this error.
     pub kind: DkimSignatureErrorKind,
 
+    // TODO suffix these fields with _str to differentiate from DkimSignature field names?
     /// The string value of the *a=* tag, if available.
     pub algorithm: Option<Box<str>>,
     /// The string value of the *b=* tag, if available. Interior folding
@@ -1064,6 +1065,7 @@ fn decorate_with_raw_tag_values(
     let identity = find_tag(tag_list, "i").map(From::from);
     let selector = find_tag(tag_list, "s").map(From::from);
 
+    // TODO does stripping whitespace make sense, conceals real b= value?
     // Strip whitespace from *b=*, the only one of these tags that customarily
     // contains FWS.
     let signature_data = find_tag(tag_list, "b")

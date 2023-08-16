@@ -65,6 +65,7 @@ pub struct Config {
     /// By default, no additional headers are required to be signed.
     pub required_signed_headers: Vec<FieldName>,
 
+    // TODO rename min_rsa_key_bits ?
     /// Minimum acceptable key size in bits. When the key size of an RSA public
     /// key is below this limit, the signature will not validate.
     ///
@@ -151,7 +152,8 @@ pub struct VerificationResult {
     /// The verification status.
     pub status: VerificationStatus,
     /// The index of the evaluated *DKIM-Signature* header in the original
-    /// `HeaderFields` input.
+    /// `HeaderFields` input. This value is unique among the
+    /// `VerificationResult`s returned by a call to [`Verifier::finish`].
     pub index: usize,
     /// The parsed DKIM signature data obtained from the *DKIM-Signature*
     /// header, if available.
@@ -317,7 +319,7 @@ impl Display for VerificationError {
             Self::DomainMismatch => write!(f, "domain mismatch"),
             Self::VerificationFailure(_) => write!(f, "signature verification failed"),
             Self::InsufficientContent => write!(f, "not enough message body content"),
-            Self::BodyHashMismatch => write!(f, "body hash mismatch"),
+            Self::BodyHashMismatch => write!(f, "body hash did not verify"),
             Self::Policy(_) => write!(f, "local policy violation"),
         }
     }
@@ -495,8 +497,8 @@ struct VerifierTask {
 ///     \tt=1687435395; x=1687867395; h=Date:Subject:To:From; bh=1zGfaauQ3vmMhm21CGMC23\r\n\
 ///     \taJE1JrOoKsgT/wvw9owzE=; b=Ny5/l088Iubyzlq56ab9Xe6/9YDcIvydie0GOI6CEsaIdktjLlA\r\n\
 ///     \tOvKuE7wU4203PIMx0MuW7lFLpdRIcPDl3Cg==\r\n\
-///     Received: from smtp.example.com by mail.example.org\r\n\
-///     \twith ESMTPS id A6DE7475; Thu, 22 Jun 2023 14:03:29 +0200\r\n\
+///     Received: from submit.example.com by mail.example.com\r\n\
+///     \twith ESMTPSA id A6DE7475; Thu, 22 Jun 2023 14:03:14 +0200\r\n\
 ///     From: me@example.com\r\n\
 ///     To: you@example.org\r\n\
 ///     Subject: Re: Thursday 8pm\r\n\
