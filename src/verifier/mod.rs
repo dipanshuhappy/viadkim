@@ -260,6 +260,7 @@ impl VerificationStatus {
 /// All policy errors can be disabled via [`Config`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PolicyError {
+    // TODO should this be named "-Header-" (sg)?
     RequiredHeadersNotSigned,
     UnsignedContent,
     SignatureExpired,

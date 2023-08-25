@@ -94,8 +94,8 @@ fn compute_tag_names<'a>(
 
     names.push("v");
     names.push("d");
-    names.push("s");
     sig.identity.is_some().then(|| names.push("i"));
+    names.push("s");
     names.push("a");
 
     // Note: tag q=dns/txt is omitted.
