@@ -156,8 +156,8 @@ fn format_without_signature(
     let out = &mut output;
     let i = &mut i;
 
-    // Now, format the tags into the output. Given the invariants ensured by the
-    // first step, `unwrap` is used deliberately.
+    // Now, format the tags into the output. Given the invariants enforced by
+    // the first step, `unwrap` is used deliberately.
     for (index, tag_name) in tag_names.into_iter().enumerate() {
         let last = index == last_index;
 
@@ -215,8 +215,8 @@ fn format_tag_s(out: &mut String, i: &mut usize, fmt: Fmt<'_>, selector: &Select
 }
 
 fn format_tag_i(out: &mut String, i: &mut usize, fmt: Fmt<'_>, identity: &Identity) {
-    let Identity { local_part, domain_part } = identity;
-    let d = domain_part.to_unicode();
+    let Identity { local_part, domain } = identity;
+    let d = domain.to_unicode();
 
     let identity = match local_part {
         Some(l) => format!("{}@{d}", quoted_printable::encode(l.as_bytes(), false)),
@@ -366,7 +366,7 @@ fn format_tag_z(out: &mut String, i: &mut usize, fmt: Fmt<'_>, value: &[(FieldNa
 
     let Fmt { width, indent, last } = fmt;
 
-    let mut iter = value.iter().map(|(f, v)| (f.as_ref(), v)).peekable();
+    let mut iter = value.iter().map(|(f, v)| (f.as_ref(), v));
 
     // ensure that z= plus the first header name (including ':') fit on the first line
 

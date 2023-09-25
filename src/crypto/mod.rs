@@ -26,11 +26,11 @@
 //!
 //! ## RSA
 //!
-//! In RFC 6376 a bad mistake was made in the description of the public key
-//! creation. Section 3.6.1 states that the p= tag contains an RSA public key in
-//! format *RSAPublicKey* (RFC 3447). However, the example in appendix C shows
-//! how to install an RSA public key in format *SubjectPublicKeyInfo* (RFC 5280)
-//! in the DNS.
+//! In RFC 6376 a serious mistake was made in the description of the public key
+//! creation. Section 3.6.1 states that the *p=* tag contains an RSA public key
+//! in format *RSAPublicKey* (RFC 3447). However, the example in appendix C
+//! shows how to install an RSA public key in format *SubjectPublicKeyInfo* (RFC
+//! 5280) in the DNS.
 //!
 //! It is the second, slightly larger, format that implementers have taken as
 //! authoritative and that has become widespread. In other words, the
@@ -259,6 +259,9 @@ pub enum VerifyingKey {
 }
 
 impl VerifyingKey {
+    /// Returns this key’s size in bits, if available.
+    ///
+    /// Currently only the RSA verifying key provides a key size.
     pub fn key_size(&self) -> Option<usize> {
         match self {
             Self::Rsa(public_key) => Some(self::rsa::get_public_key_size(public_key)),

@@ -33,7 +33,7 @@ pub fn read_rsa_public_key(key_data: &[u8]) -> Result<RsaPublicKey, Verification
     // First try reading the bytes as *SubjectPublicKeyInfo* format
     // (the de facto procedure, as shown in examples in appendix C of RFC 6376).
     // Then try reading the bytes as *RSAPublicKey* format
-    // (what was actually specified in the RFC).
+    // (what was actually specified in RFC 6376).
     // See the module comment in `viadkim::crypto`.
 
     let public_key = RsaPublicKey::from_public_key_der(key_data)

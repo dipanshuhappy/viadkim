@@ -41,17 +41,17 @@
 //!
 //! # Cargo features
 //!
-//! The feature **`trust-dns-resolver`** makes an implementation of
-//! [`LookupTxt`][crate::verifier::LookupTxt] available for the Trust-DNS
-//! resolver.
+//! The feature **`trust-dns-resolver`** makes an implementation of trait
+//! [`LookupTxt`][crate::verifier::LookupTxt] available for the [Trust-DNS
+//! resolver]. `LookupTxt` is the abstraction used for DNS resolution during
+//! verification.
 //!
 //! The feature **`pre-rfc8301`** reverts cryptographic algorithm and key usage
 //! back to before [RFC 8301]: it lowers the minimum RSA key size to 512 bits,
-//! and enables dependency `sha1` and thereby the insecure, historic SHA-1 hash
-//! algorithm. In the API and implementation, wherever there is support for the
-//! SHA-256 hash algorithm, with this feature additional support for SHA-1
-//! becomes available. This is a legacy compatibility feature, its use is
-//! strongly discouraged.
+//! and enables the insecure, historic SHA-1 hash algorithm. In the API and
+//! implementation, wherever there is support for the SHA-256 hash algorithm,
+//! with this feature additional support for SHA-1 becomes available. This is a
+//! legacy compatibility feature, its use is strongly discouraged.
 //!
 //! # Trace logging
 //!
@@ -61,6 +61,7 @@
 //!
 //! [RFC 6376]: https://www.rfc-editor.org/rfc/rfc6376
 //! [RFC 8301]: https://www.rfc-editor.org/rfc/rfc8301
+//! [Trust-DNS resolver]: https://crates.io/crates/trust-dns-resolver
 //! [tracing]: https://crates.io/crates/tracing
 //! [tracing-subscriber]: https://crates.io/crates/tracing-subscriber
 

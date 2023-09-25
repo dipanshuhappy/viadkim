@@ -46,11 +46,11 @@ pub enum BodyLength {
     /// Do not limit the body length: no *l=* tag.
     #[default]
     NoLimit,
-    /// Sign the entire message body as presented: set *l=* to the actual body
+    /// Sign the entire canonicalised message body: set *l=* to the actual body
     /// length.
     MessageContent,
-    /// Sign exactly the specified number of bytes of body content: set *l=* to
-    /// the given value.
+    /// Sign exactly the specified number of bytes of canonicalised body
+    /// content: set *l=* to the given value.
     Exact(u64),
 }
 
@@ -216,7 +216,7 @@ impl Default for OutputFormat {
     }
 }
 
-struct ClosureDebug<'a>(&'a Box<dyn Fn(&str, &str) -> Ordering + Send + Sync>);
+struct ClosureDebug<'a>(&'a (dyn Fn(&str, &str) -> Ordering + Send + Sync));
 
 impl fmt::Debug for ClosureDebug<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -230,7 +230,7 @@ impl fmt::Debug for OutputFormat {
             .field("header_name", &self.header_name)
             .field("line_width", &self.line_width)
             .field("indentation", &self.indentation)
-            .field("tag_order", &self.tag_order.as_ref().map(ClosureDebug))
+            .field("tag_order", &self.tag_order.as_deref().map(ClosureDebug))
             .finish()
     }
 }
@@ -322,7 +322,7 @@ fn validate_request<T: AsRef<SigningKey>>(request: &SignRequest<T>) -> Result<()
     }
 
     if let Some(identity) = &request.identity {
-        if !identity.domain_part.eq_or_subdomain_of(&request.domain) {
+        if !identity.domain.eq_or_subdomain_of(&request.domain) {
             return Err(RequestError::DomainMismatch);
         }
     }
@@ -588,7 +588,7 @@ where
 
     // Note: The `sign` method doesn’t actually need to be async. But it’s where
     // the work is done, so we introduce this artificial await point for every
-    // signature.
+    // signature, so control may be yielded to runtime if many signatures.
 
     /// Performs the actual signing and returns the resulting signatures.
     ///

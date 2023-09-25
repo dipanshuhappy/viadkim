@@ -20,9 +20,8 @@ use crate::{
     crypto::{HashAlgorithm, KeyType},
     header::FieldName,
     tag_list::{self, TagList, TagSpec},
-    util::{Base64Debug, CanonicalStr},
+    util::{Base64Debug, BytesDebug, CanonicalStr},
 };
-use bstr::ByteSlice;
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
@@ -305,11 +304,14 @@ impl Error for ParseIdentityError {}
 pub struct Identity {
     // Note: because PartialEq and Hash are derived, the local-part will be
     // compared/hashed literally and in case-sensitive fashion.
+
+    /// The identity’s optional local-part.
     pub local_part: Option<Box<str>>,
-    pub domain_part: DomainName,
+
+    /// The identity’s domain part.
+    pub domain: DomainName,
 }
 
-// TODO make new take an impl Into<String>?
 impl Identity {
     /// Creates a new agent or user identifier from the given string.
     pub fn new(s: &str) -> Result<Self, ParseIdentityError> {
@@ -321,23 +323,23 @@ impl Identity {
             if !is_local_part(local_part) {
                 return Err(ParseIdentityError);
             }
-            Some(local_part.into())
+            Some(local_part)
         };
 
-        let domain_part = domain.parse().map_err(|_| ParseIdentityError)?;
+        let domain = domain.parse().map_err(|_| ParseIdentityError)?;
 
         Ok(Self {
-            local_part,
-            domain_part,
+            local_part: local_part.map(Into::into),
+            domain,
         })
     }
 
-    /// Creates a new agent or user identifier for the given domain name,
+    /// Creates a new agent or user identifier from the given domain name,
     /// without local-part.
-    pub fn from_domain(domain_part: DomainName) -> Self {
+    pub fn from_domain(domain: DomainName) -> Self {
         Self {
             local_part: None,
-            domain_part,
+            domain,
         }
     }
 }
@@ -350,7 +352,7 @@ impl Display for Identity {
         if let Some(local_part) = &self.local_part {
             write!(f, "{local_part}")?;
         }
-        write!(f, "@{}", self.domain_part)
+        write!(f, "@{}", self.domain)
     }
 }
 
@@ -668,29 +670,29 @@ pub struct DkimSignatureError {
     /// The error kind that caused this error.
     pub kind: DkimSignatureErrorKind,
 
-    // TODO suffix these fields with _str to differentiate from DkimSignature field names?
     /// The string value of the *a=* tag, if available.
-    pub algorithm: Option<Box<str>>,
-    /// The string value of the *b=* tag, if available. Interior folding
-    /// whitespace has been stripped out.
-    pub signature_data: Option<Box<str>>,
+    pub algorithm_str: Option<Box<str>>,
+    /// The string value of the *b=* tag, if available.
+    pub signature_data_str: Option<Box<str>>,
     /// The string value of the *d=* tag, if available.
-    pub domain: Option<Box<str>>,
+    pub domain_str: Option<Box<str>>,
     /// The string value of the *i=* tag, if available.
-    pub identity: Option<Box<str>>,
+    pub identity_str: Option<Box<str>>,
     /// The string value of the *s=* tag, if available.
-    pub selector: Option<Box<str>>,
+    pub selector_str: Option<Box<str>>,
 }
 
 impl DkimSignatureError {
-    pub fn new(error: DkimSignatureErrorKind) -> Self {
+    /// Creates a new DKIM signature error of the given kind, with no additional
+    /// data attached.
+    pub fn new(kind: DkimSignatureErrorKind) -> Self {
         Self {
-            kind: error,
-            algorithm: None,
-            signature_data: None,
-            domain: None,
-            identity: None,
-            selector: None,
+            kind,
+            algorithm_str: None,
+            signature_data_str: None,
+            domain_str: None,
+            identity_str: None,
+            selector_str: None,
         }
     }
 }
@@ -743,8 +745,8 @@ impl Display for DkimSignatureErrorKind {
             Self::Utf8Encoding => write!(f, "signature not UTF-8 encoded"),
             Self::TagListFormat => write!(f, "ill-formed tag list"),
             Self::IncompatibleVersion => write!(f, "incompatible version"),
-            Self::HistoricAlgorithm => write!(f, "historic signing algorithm"),
-            Self::UnsupportedAlgorithm => write!(f, "unsupported signing algorithm"),
+            Self::HistoricAlgorithm => write!(f, "historic signature algorithm"),
+            Self::UnsupportedAlgorithm => write!(f, "unsupported signature algorithm"),
             Self::InvalidBase64 => write!(f, "invalid Base64 string"),
             Self::EmptySignatureTag => write!(f, "b= tag empty"),
             Self::EmptyBodyHashTag => write!(f, "bh= tag empty"),
@@ -821,7 +823,39 @@ pub struct DkimSignature {
 }
 
 impl DkimSignature {
-    fn from_tag_list(tag_list: &TagList<'_>) -> Result<Self, DkimSignatureErrorKind> {
+    fn from_tag_list(tag_list: &TagList<'_>) -> Result<Self, DkimSignatureError> {
+        Self::from_tag_list_internal(tag_list).map_err(|kind| {
+            // The error path. Extract some data in raw form.
+
+            let mut algorithm_str = None;
+            let mut signature_data_str = None;
+            let mut domain_str = None;
+            let mut identity_str = None;
+            let mut selector_str = None;
+
+            for &TagSpec { name, value } in tag_list.as_ref() {
+                match name {
+                    "a" => algorithm_str = Some(value.into()),
+                    "b" => signature_data_str = Some(value.into()),
+                    "d" => domain_str = Some(value.into()),
+                    "i" => identity_str = Some(value.into()),
+                    "s" => selector_str = Some(value.into()),
+                    _ => {}
+                }
+            }
+
+            DkimSignatureError {
+                kind,
+                algorithm_str,
+                signature_data_str,
+                domain_str,
+                identity_str,
+                selector_str,
+            }
+        })
+    }
+
+    fn from_tag_list_internal(tag_list: &TagList<'_>) -> Result<Self, DkimSignatureErrorKind> {
         let mut version_seen = false;
         let mut algorithm = None;
         let mut signature_data = None;
@@ -998,7 +1032,7 @@ impl DkimSignature {
         let selector = selector.ok_or(DkimSignatureErrorKind::MissingSelectorTag)?;
 
         if let Some(id) = &identity {
-            if !id.domain_part.eq_or_subdomain_of(&domain) {
+            if !id.domain.eq_or_subdomain_of(&domain) {
                 return Err(DkimSignatureErrorKind::DomainMismatch);
             }
         }
@@ -1038,46 +1072,7 @@ impl FromStr for DkimSignature {
         let tag_list = TagList::from_str(s)
             .map_err(|_| DkimSignatureError::new(DkimSignatureErrorKind::TagListFormat))?;
 
-        match Self::from_tag_list(&tag_list) {
-            Ok(sig) => Ok(sig),
-            Err(e) => {
-                // The error path. Extract some data in raw form.
-                Err(decorate_with_raw_tag_values(e, &tag_list))
-            }
-        }
-    }
-}
-
-fn decorate_with_raw_tag_values(
-    error: DkimSignatureErrorKind,
-    tag_list: &TagList<'_>,
-) -> DkimSignatureError {
-    fn find_tag<'a>(tag_list: &'a TagList<'_>, name: &'static str) -> Option<&'a str> {
-        tag_list
-            .as_ref()
-            .iter()
-            .find(|spec| spec.name == name)
-            .map(|spec| spec.value)
-    }
-
-    let algorithm = find_tag(tag_list, "a").map(From::from);
-    let domain = find_tag(tag_list, "d").map(From::from);
-    let identity = find_tag(tag_list, "i").map(From::from);
-    let selector = find_tag(tag_list, "s").map(From::from);
-
-    // TODO does stripping whitespace make sense, conceals real b= value?
-    // Strip whitespace from *b=*, the only one of these tags that customarily
-    // contains FWS.
-    let signature_data = find_tag(tag_list, "b")
-        .map(|value| tag_list::strip_fws_from_tag_value(value).into());
-
-    DkimSignatureError {
-        kind: error,
-        algorithm,
-        signature_data,
-        domain,
-        identity,
-        selector,
+        Self::from_tag_list(&tag_list)
     }
 }
 
@@ -1087,7 +1082,7 @@ impl fmt::Debug for CopiedHeadersDebug<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_list();
         for (name, value) in self.0 {
-            d.entry(&(name, value.as_bstr()));
+            d.entry(&(name, BytesDebug(value)));
         }
         d.finish()
     }

@@ -47,30 +47,23 @@ patterns.
 Finally, care is taken to strictly **conform to RFC 6376**, including RFC
 updates and known errata. Support for internationalised email was already
 mentioned, but also, for example, more recent recommendations for supported
-signing algorithms such as addition of *ed25519-sha256* and retirement of
+signature algorithms such as addition of *ed25519-sha256* and retirement of
 *rsa-sha1* are adopted.
 
 ## Usage
 
-TODO
+This is a [Rust] library. Include viadkim in `Cargo.toml` as usual.
 
-Two structs provide the main entry points to DKIM processing with viadkim:
-`Signer` for signing a message, and `Verifier` for verifying a message’s
-signatures.
-
-DNS resolution is abstracted in trait `LookupTxt`.
-
-A lookup implementation of the `LookupTxt` trait can be made available for the
-Trust-DNS async resolver by enabling feature `trust-dns-resolver`.
-
-The feature `pre-rfc8301` reverts cryptographic algorithm and key usage back to
-before [RFC 8301]: it allows use of RSA key sizes below 1024 bits, and enables
-support for the insecure, historic SHA-1 algorithm. Use of this feature is
-strongly discouraged.
+Two structs provide the entry points to DKIM processing with viadkim: [`Signer`]
+for signing a message, and [`Verifier`] for verifying a message’s signatures.
+See the [API documentation] for usage instructions.
 
 The minimum supported Rust version is 1.65.0.
 
-[RFC 8301]: https://www.rfc-editor.org/rfc/rfc8301
+[Rust]: https://www.rust-lang.org
+[`Signer`]: https://docs.rs/viadkim/0.0.5/viadkim/signer/struct.Signer.html
+[`Verifier`]: https://docs.rs/viadkim/0.0.5/viadkim/verifier/struct.Verifier.html
+[API documentation]: https://docs.rs/viadkim
 
 ## Examples
 
@@ -106,7 +99,7 @@ enable the library’s trace logging.
 
 Edit these examples to experiment with various configuration options.
 
-## Acknowledgments
+## Acknowledgements
 
 While this is an independent implementation of DKIM that was created from
 scratch, the author wishes to give credit to the [OpenDKIM] project. As a

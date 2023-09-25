@@ -16,7 +16,7 @@
 
 use crate::{
     crypto::{HashAlgorithm, KeyType, VerifyingKey},
-    header::HeaderFields,
+    header::{FieldName, HeaderField, HeaderFields},
     record::{DkimKeyRecord, DkimKeyRecordError, SelectorFlag},
     signature::{
         DkimSignature, DkimSignatureError, DkimSignatureErrorKind, DomainName, Identity,
@@ -99,6 +99,7 @@ impl<'a, 'b> HeaderVerifier<'a, 'b> {
             let value = match str::from_utf8(value.as_ref()) {
                 Ok(s) => s,
                 Err(_) => {
+                    trace!(index, "invalid UTF-8 in DKIM-Signature header");
                     let error = VerificationError::DkimSignatureFormat(DkimSignatureError::new(
                         DkimSignatureErrorKind::Utf8Encoding,
                     ));
@@ -110,13 +111,14 @@ impl<'a, 'b> HeaderVerifier<'a, 'b> {
             let sig = match DkimSignature::from_str(value) {
                 Ok(sig) => sig,
                 Err(e) => {
+                    trace!(index, "failed to parse DKIM-Signature header");
                     let error = VerificationError::DkimSignatureFormat(e);
                     tasks.push(VerifyTask::failed(index, error));
                     continue;
                 }
             };
 
-            if let Err(e) = validate_signature(&sig, config) {
+            if let Err(e) = validate_signature(&sig, index, headers, config) {
                 let mut task = VerifyTask::failed(index, e);
                 // Also record `DkimSignature`, which we were able to parse:
                 task.signature = Some(sig);
@@ -124,6 +126,7 @@ impl<'a, 'b> HeaderVerifier<'a, 'b> {
                 continue;
             }
 
+            trace!(index, "found DKIM-Signature header");
             let task = VerifyTask::started(index, sig, name.as_ref().into(), value.into());
 
             tasks.push(task);
@@ -164,16 +167,23 @@ impl<'a, 'b> HeaderVerifier<'a, 'b> {
     }
 }
 
-fn validate_signature(sig: &DkimSignature, config: &Config) -> Result<(), VerificationError> {
-    for h in &config.required_signed_headers {
-        if !sig.signed_headers.contains(h) {
-            return Err(VerificationError::Policy(PolicyError::RequiredHeadersNotSigned));
-        }
-    }
+fn validate_signature(
+    sig: &DkimSignature,
+    index: usize,
+    headers: &HeaderFields,
+    config: &Config,
+) -> Result<(), VerificationError> {
+    validate_signed_headers(
+        index,
+        headers.as_ref(),
+        &config.headers_required_in_signature,
+        &config.headers_forbidden_to_be_unsigned,
+        &sig.signed_headers,
+    )?;
 
     if let Some(len) = sig.body_length {
         if usize::try_from(len).is_err() {
-            // signed body length too large to undergo DKIM processing on this platform
+            trace!(index, "body length declared in DKIM-Signature too large");
             return Err(VerificationError::Overflow);
         }
     }
@@ -184,6 +194,7 @@ fn validate_signature(sig: &DkimSignature, config: &Config) -> Result<(), Verifi
         if let Some(t) = sig.expiration {
             let delta = config.time_tolerance.as_secs();
             if current_t >= t.saturating_add(delta) {
+                trace!(index, "DKIM-Signature has expired");
                 return Err(VerificationError::Policy(PolicyError::SignatureExpired));
             }
         }
@@ -193,6 +204,7 @@ fn validate_signature(sig: &DkimSignature, config: &Config) -> Result<(), Verifi
         if let Some(t) = sig.timestamp {
             let delta = config.time_tolerance.as_secs();
             if t.saturating_sub(delta) > current_t {
+                trace!(index, "DKIM-Signature has timestamp in future");
                 return Err(VerificationError::Policy(PolicyError::TimestampInFuture));
             }
         }
@@ -201,7 +213,39 @@ fn validate_signature(sig: &DkimSignature, config: &Config) -> Result<(), Verifi
     #[cfg(feature = "pre-rfc8301")]
     if !config.allow_sha1 {
         if let HashAlgorithm::Sha1 = sig.algorithm.hash_algorithm() {
+            trace!(index, "DKIM-Signature uses unacceptable SHA-1 hash algorithm");
             return Err(VerificationError::Policy(PolicyError::Sha1HashAlgorithm));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_signed_headers(
+    index: usize,
+    headers: &[HeaderField],
+    headers_required_in_signature: &[FieldName],
+    headers_forbidden_to_be_unsigned: &[FieldName],
+    signed_headers: &[FieldName],
+) -> Result<(), VerificationError> {
+    for h in headers_required_in_signature {
+        if !signed_headers.contains(h) {
+            trace!(index, "required header not included in DKIM-Signature");
+            return Err(VerificationError::Policy(PolicyError::RequiredHeaderNotSigned));
+        }
+    }
+
+    for req in headers_forbidden_to_be_unsigned {
+        let actual_n = headers.iter().filter(|(name, _)| name == req).count();
+        let signed_n = signed_headers
+            .iter()
+            .filter(|&name| name == req)
+            .take(actual_n)
+            .count();
+
+        if signed_n < actual_n {
+            trace!(index, "unsigned occurrence of required header in DKIM-Signature");
+            return Err(VerificationError::Policy(PolicyError::UnsignedHeaderOccurrence));
         }
     }
 
@@ -224,7 +268,7 @@ impl CachedDkimKeyRecord {
                     // The per-record I/O error is mapped to an opaque
                     // `DkimKeyRecordError` variant, details are only exposed in
                     // the trace log.
-                    trace!("cannot use DNS record: {e}");
+                    trace!("cannot use DNS TXT record: {e}");
                     Err(DkimKeyRecordError::RecordFormat)
                 }
             };
@@ -243,16 +287,19 @@ fn map_lookup_result_to_key_records(
 ) -> Result<Vec<CachedDkimKeyRecord>, VerificationError> {
     match lookup_result {
         Ok(txts) if txts.is_empty() => {
-            trace!("no key record");
+            trace!("query found no key records");
             Err(VerificationError::NoKeyFound)
         }
-        Ok(txts) => Ok(txts
-            .into_iter()
-            .map(CachedDkimKeyRecord::Unparsed)
-            .collect()),
+        Ok(txts) => {
+            let records = txts
+                .into_iter()
+                .map(CachedDkimKeyRecord::Unparsed)
+                .collect();
+            Ok(records)
+        }
         Err(e) => match e.kind() {
             ErrorKind::NotFound => {
-                trace!("no key record");
+                trace!("query found no key records");
                 Err(VerificationError::NoKeyFound)
             }
             ErrorKind::InvalidInput => {
@@ -279,13 +326,17 @@ fn verify_task(
     config: &Config,
     lookup_result: &mut Result<Vec<CachedDkimKeyRecord>, VerificationError>,
 ) {
-    trace!("processing DKIM-Signature");
-
     let sig = task.signature.as_ref().unwrap();
+
+    let domain = &sig.domain;
+    let selector = &sig.selector;
+
+    trace!(%domain, %selector, "processing DKIM-Signature");
 
     let cached_records = match lookup_result {
         Ok(r) => r,
         Err(e) => {
+            trace!("cannot evaluate signature without lookup result");
             task.status = VerifyStatus::Failed(e.clone());
             return;
         }
@@ -318,7 +369,7 @@ fn verify_task(
             key_type,
             hash_alg,
             key_record,
-            &sig.domain,
+            domain,
             sig.identity.as_ref(),
         ) {
             task.status = VerifyStatus::Failed(e);
@@ -331,6 +382,7 @@ fn verify_task(
         let key = match VerifyingKey::from_key_data(key_type, key_data) {
             Ok(k) => k,
             Err(e) => {
+                trace!("unusable key data in public key record");
                 task.status = VerifyStatus::Failed(VerificationError::VerificationFailure(e));
                 task.key_record = Some(key_record.clone());
                 continue;
@@ -368,26 +420,27 @@ fn validate_key_record(
     identity: Option<&Identity>,
 ) -> Result<(), VerificationError> {
     if record.key_type != key_type {
-        trace!("wrong public key type");
+        trace!("wrong key type in public key record");
         return Err(VerificationError::WrongKeyType);
     }
 
     if record.key_data.is_empty() {
-        trace!("key revoked");
+        trace!("key in public key record is revoked");
         return Err(VerificationError::KeyRevoked);
     }
 
     if !record.hash_algorithms.contains(&hash_alg) {
-        trace!("disallowed hash algorithm");
+        trace!("hash algorithm not allowed by public key record");
         return Err(VerificationError::DisallowedHashAlgorithm);
     }
 
     if record.flags.contains(&SelectorFlag::NoSubdomains) {
-        // assumes that parsing already validated that i= domain is subdomain of d=
-        // need to compare A-label form (case-normalised) strings
         if let Some(identity) = identity {
-            if domain.to_ascii() != identity.domain_part.to_ascii() {
-                trace!("domain mismatch");
+            // Parsing of the key record already ensures that *i=* domain is
+            // subdomain of *d=*, can now compare normalised (lowercase) A-label
+            // form directly.
+            if domain.to_ascii() != identity.domain.to_ascii() {
+                trace!("i= and d= domains not allowed to differ by public key record");
                 return Err(VerificationError::DomainMismatch);
             }
         }
@@ -404,6 +457,7 @@ fn validate_verifying_key(
         // Note the hard minimum key size already enforced when constructing an
         // `RsaPublicKey`.
         if n < config.min_key_bits {
+            trace!("public key size not acceptable due to local policy");
             return Err(VerificationError::Policy(PolicyError::KeyTooSmall));
         }
     }
@@ -413,6 +467,7 @@ fn validate_verifying_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::header::FieldBody;
 
     #[test]
     fn header_verifier_find_signatures_empty() {
@@ -456,5 +511,39 @@ dkim-signature: v=2; d=example.com; s=sel; x=y
         assert!(matches!(iter.next().unwrap().status, VerifyStatus::Failed(_)));
         assert!(matches!(iter.next().unwrap().status, VerifyStatus::InProgress));
         assert!(matches!(iter.next().unwrap().status, VerifyStatus::Failed(_)));
+    }
+
+    #[test]
+    fn validate_signed_headers_ok() {
+        let header = header_fields(["a", "b", "a", "c"]);
+
+        let required = field_names([]);
+        let exhaustive = field_names(["a", "d"]);
+
+        let signed = field_names(["a", "b", "a", "a"]);
+        assert_eq!(validate_signed_headers(0, &header, &required, &exhaustive, &signed), Ok(()));
+
+        let signed = field_names(["a", "b", "a"]);
+        assert_eq!(validate_signed_headers(0, &header, &required, &exhaustive, &signed), Ok(()));
+
+        let signed = field_names(["a", "b"]);
+        assert_eq!(
+            validate_signed_headers(0, &header, &required, &exhaustive, &signed),
+            Err(VerificationError::Policy(
+                PolicyError::UnsignedHeaderOccurrence
+            ))
+        );
+    }
+
+    fn header_fields(names: impl IntoIterator<Item = &'static str>) -> Vec<HeaderField> {
+        names.into_iter()
+            .map(|name| (FieldName::new(name).unwrap(), FieldBody::new(*b"").unwrap()))
+            .collect()
+    }
+
+    fn field_names(names: impl IntoIterator<Item = &'static str>) -> Vec<FieldName> {
+        names.into_iter()
+            .map(|name| FieldName::new(name).unwrap())
+            .collect()
     }
 }

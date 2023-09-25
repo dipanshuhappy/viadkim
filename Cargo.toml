@@ -12,7 +12,6 @@ exclude = ["/.gitignore", "/.gitlab-ci.yml"]
 
 [dependencies]
 base64ct = { version = "1.6.0", features = ["alloc"] }
-bstr = { version = "1.5.0", default-features = false, features = ["std"] }
 digest = "0.10.7"
 ed25519-dalek = { version = "2.0.0", features = ["pkcs8"] }
 idna = "0.4.0"
@@ -29,6 +28,7 @@ tokio = { version = "1.29.1", features = ["io-std", "io-util", "test-util"] }
 tracing-subscriber = "0.3.17"
 
 [features]
+# Reverts cryptographic algorithm and key usage to before RFC 8301.
 pre-rfc8301 = ["dep:sha1"]
 
 [[test]]

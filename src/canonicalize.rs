@@ -20,7 +20,6 @@ use crate::{
     header::{FieldBody, FieldName, HeaderFields},
     signature::CanonicalizationAlgorithm,
 };
-use bstr::ByteSlice;
 use std::collections::HashSet;
 
 const SP: u8 = b' ';
@@ -327,9 +326,19 @@ fn canonicalize_header_relaxed(canon_headers: &mut Vec<u8>, value: &[u8]) {
         matches!(c, ' ' | '\t' | '\r' | '\n')
     }
 
+    fn trim_space(mut value: &[u8]) -> &[u8] {
+        while let Some((_, rest)) = value.split_first().filter(|(&b, _)| is_space(b.into())) {
+            value = rest;
+        }
+        while let Some((_, rest)) = value.split_last().filter(|(&b, _)| is_space(b.into())) {
+            value = rest;
+        }
+        value
+    }
+
     debug_assert!(FieldBody::new(value).is_ok());
 
-    let value = value.trim_with(is_space);
+    let value = trim_space(value);
 
     let mut compressing = false;
     for &b in value {
@@ -350,7 +359,6 @@ fn canonicalize_header_relaxed(canon_headers: &mut Vec<u8>, value: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bstr::BStr;
 
     #[test]
     fn canonicalize_headers_relaxed_ok() {
@@ -369,12 +377,12 @@ mod tests {
         ];
 
         assert_eq!(
-            BStr::new(&canonicalize_headers(
+            canonicalize_headers(
                 CanonicalizationAlgorithm::Relaxed,
                 &headers,
                 &selected_headers,
-            )),
-            BStr::new(&b"to:another one\r\nfrom:Good\r\nto:see me\r\n"[..]),
+            ),
+            &b"to:another one\r\nfrom:Good\r\nto:see me\r\n"[..],
         );
     }
 
@@ -384,7 +392,7 @@ mod tests {
   c=simple; q=dns/txt; i=@eng.example.net;
   h=from:to:subject:date;
   bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=;
-  b=dzdV...";
+  b=dzdV...   ";
         let example = example.replace('\n', "\r\n");
 
         let mut result = vec![];

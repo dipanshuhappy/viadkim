@@ -18,8 +18,10 @@
 //!
 //! See RFC 6376, section 2.11.
 
-use crate::parse::{is_wsp, strip_fws, strip_suffix};
-use bstr::ByteVec;
+use crate::{
+    parse::{is_wsp, strip_fws, strip_suffix},
+    util,
+};
 use std::{
     error::Error,
     fmt::{self, Display, Formatter, Write},
@@ -27,21 +29,28 @@ use std::{
 
 /// Encodes bytes as a DKIM-Quoted-Printable string.
 pub fn encode(mut bytes: &[u8], encode_bar: bool) -> String {
+    fn encode_byte(s: &mut String, b: u8) {
+        write!(s, "={b:02X}").unwrap();
+    }
+
     let mut result = String::with_capacity(bytes.len());
 
     while !bytes.is_empty() {
-        match bstr::decode_utf8(bytes) {
-            (Some(c), len) if is_dkim_safe_char(c) && !(c == '|' && encode_bar) => {
+        if let Some(chunk) = util::next_utf8_chunk(bytes) {
+            for c in chunk.chars() {
                 // Some ASCII characters (maybe including the vertical bar) and
-                // all non-ASCII Unicode characters can be used as-is.
-                result.push(c);
-                bytes = &bytes[len..];
+                // all non-ASCII Unicode characters can be used as-is. Some
+                // ASCII characters (and ill-formed UTF-8) need encoding.
+                if is_dkim_safe_char(c) && !(c == '|' && encode_bar) {
+                    result.push(c);
+                } else {
+                    encode_byte(&mut result, u8::try_from(c).unwrap());
+                }
             }
-            _ => {
-                // Some ASCII, and non-UTF-8 non-ASCII characters need encoding.
-                write!(result, "={:02X}", bytes[0]).unwrap();
-                bytes = &bytes[1..];
-            }
+            bytes = &bytes[chunk.len()..];
+        } else {
+            encode_byte(&mut result, bytes[0]);
+            bytes = &bytes[1..];
         }
     }
 
@@ -155,7 +164,8 @@ pub fn decode_qp_section(s: &str) -> Result<Vec<u8>, QuotedPrintableError> {
 
             result.push(b);
         } else if is_dkim_safe_char(c) || is_wsp(c) {
-            result.push_char(c);
+            let mut buf = [0; 4];
+            result.extend(c.encode_utf8(&mut buf).bytes());
         } else {
             return Err(QuotedPrintableError);
         }
@@ -206,7 +216,6 @@ fn is_hexdig(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bstr::ByteSlice;
 
     #[test]
     fn encode_basic() {
@@ -242,7 +251,7 @@ mod tests {
     fn decode_tag_list() {
         let example = "=20v=20 =3     D=20=FF1=\r\n\t3B我=0D=0A=09a=3Drsa-sha256=3B=20s=3Dbrisbane=3B";
         assert_eq!(
-            decode(example).unwrap().as_bstr(),
+            decode(example).unwrap(),
             &b" v = \xff1;\xe6\x88\x91\r\n\ta=rsa-sha256; s=brisbane;"[..]
         );
     }

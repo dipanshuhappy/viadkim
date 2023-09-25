@@ -28,12 +28,12 @@
 //! interpretation is appropriate in each case, else the term is disambiguated
 //! in some way. See also the note at the end of RFC 5322, section 2.1.
 
-use bstr::ByteSlice;
+use crate::util::BytesDebug;
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
     hash::{Hash, Hasher},
-    mem,
+    iter, mem,
     str::FromStr,
     vec::IntoIter,
 };
@@ -152,7 +152,7 @@ impl FieldBody {
     pub fn new(value: impl Into<Box<[u8]>>) -> Result<Self, HeaderFieldError> {
         let value = value.into();
 
-        for (i, line) in value.split_str("\r\n").enumerate() {
+        for (i, line) in split_crlf(&value).enumerate() {
             // If there are any control characters in the line, including stray
             // CR and LF, return error. All other bytes (including Latin 1, or
             // malformed UTF-8) are allowed.
@@ -184,8 +184,25 @@ impl AsRef<[u8]> for FieldBody {
 
 impl fmt::Debug for FieldBody {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.0.as_bstr())
+        write!(f, "{:?}", &BytesDebug(&self.0))
     }
+}
+
+fn split_crlf(mut value: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut done = false;
+
+    iter::from_fn(move || {
+        if done {
+            None
+        } else if let Some(i) = value.windows(2).position(|b| b == b"\r\n") {
+            let (chunk, rest) = value.split_at(i);
+            value = &rest[2..];
+            Some(chunk)
+        } else {
+            done = true;
+            Some(value)
+        }
+    })
 }
 
 /// A collection of header fields that can be used for DKIM processing.
@@ -303,95 +320,6 @@ fn split_header_field(s: &str) -> Result<(FieldName, Vec<u8>), HeaderFieldError>
     Ok((name, value))
 }
 
-// The header validation utility here allows partial checking for RFC 5322
-// conformance; see DKIM §3.8: ‘Signers and Verifiers SHOULD take reasonable
-// steps to ensure that the messages they are processing are valid according to
-// RFC5322, RFC2045, and any other relevant message format standards.’
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum HeaderValidationError {
-    NoSingleDate,
-    NoSingleFrom,
-    MultipleSender,
-    MultipleReplyTo,
-    MultipleTo,
-    MultipleCc,
-    MultipleBcc,
-    MultipleMessageId,
-    MultipleInReplyTo,
-    MultipleReferences,
-    MultipleSubject,
-}
-
-impl Display for HeaderValidationError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoSingleDate => write!(f, "not exactly one Date header"),
-            Self::NoSingleFrom => write!(f, "not exactly one From header"),
-            Self::MultipleSender => write!(f, "more than one Sender header"),
-            Self::MultipleReplyTo => write!(f, "more than one Reply-To header"),
-            Self::MultipleTo => write!(f, "more than one To header"),
-            Self::MultipleCc => write!(f, "more than one Cc header"),
-            Self::MultipleBcc => write!(f, "more than one Bcc header"),
-            Self::MultipleMessageId => write!(f, "more than one Message-ID header"),
-            Self::MultipleInReplyTo => write!(f, "more than one In-Reply-To header"),
-            Self::MultipleReferences => write!(f, "more than one References header"),
-            Self::MultipleSubject => write!(f, "more than one Subject header"),
-        }
-    }
-}
-
-impl Error for HeaderValidationError {}
-
-/// Validates the given header according to RFC 5322, 3.6.
-///
-/// This only validates the cardinality requirements in the table at the end of
-/// section 3.6, not the format of the headers. The note regarding the *Sender*
-/// header – ‘MUST occur with multi-address from’ – is not checked.
-pub fn validate_rfc5322(header: impl AsRef<[HeaderField]>) -> Result<(), HeaderValidationError> {
-    fn count_names(header: &[HeaderField], name: &str) -> usize {
-        header.iter().filter(|(n, _)| *n == name).count()
-    }
-
-    let header = header.as_ref();
-
-    if count_names(header, "Date") != 1 {
-        return Err(HeaderValidationError::NoSingleDate);
-    }
-    if count_names(header, "From") != 1 {
-        return Err(HeaderValidationError::NoSingleFrom);
-    }
-    if count_names(header, "Sender") > 1 {
-        return Err(HeaderValidationError::MultipleSender);
-    }
-    if count_names(header, "Reply-To") > 1 {
-        return Err(HeaderValidationError::MultipleReplyTo);
-    }
-    if count_names(header, "To") > 1 {
-        return Err(HeaderValidationError::MultipleTo);
-    }
-    if count_names(header, "Cc") > 1 {
-        return Err(HeaderValidationError::MultipleCc);
-    }
-    if count_names(header, "Bcc") > 1 {
-        return Err(HeaderValidationError::MultipleBcc);
-    }
-    if count_names(header, "Message-ID") > 1 {
-        return Err(HeaderValidationError::MultipleMessageId);
-    }
-    if count_names(header, "In-Reply-To") > 1 {
-        return Err(HeaderValidationError::MultipleInReplyTo);
-    }
-    if count_names(header, "References") > 1 {
-        return Err(HeaderValidationError::MultipleReferences);
-    }
-    if count_names(header, "Subject") > 1 {
-        return Err(HeaderValidationError::MultipleSubject);
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,8 +344,28 @@ mod tests {
         assert!(FieldBody::new(*b" \r\na").is_err());
         assert!(FieldBody::new(*b" \r\n\r\n a").is_err());
         assert!(FieldBody::new(*b" \r\n \r\n a").is_err());
+        assert!(FieldBody::new(*b" \ra").is_err());
         assert!(FieldBody::new(*b" \na").is_err());
         assert!(FieldBody::new(*b" abc\r\n").is_err());
+    }
+
+    #[test]
+    fn split_crlf_ok() {
+        assert!(split_crlf(b"").eq([b""]));
+        assert!(split_crlf(b"a").eq([b"a"]));
+        assert!(split_crlf(b"\r").eq([b"\r"]));
+        assert!(split_crlf(b"\rb").eq([b"\rb"]));
+        assert!(split_crlf(b"\r\n").eq([b"", b""]));
+        assert!(split_crlf(b"a\r\n").eq([&b"a"[..], &b""[..]]));
+        assert!(split_crlf(b"\r\nb").eq([&b""[..], &b"b"[..]]));
+        assert!(split_crlf(b"\r\n\r\n").eq([b"", b"", b""]));
+
+        assert!(split_crlf(b"ab\r\n\r\nc\r\r\n\rde\r").eq([
+            &b"ab"[..],
+            &b""[..],
+            &b"c\r"[..],
+            &b"\rde\r"[..]
+        ]));
     }
 
     #[test]
@@ -433,32 +381,5 @@ mod tests {
             ),
         ])
         .is_ok());
-    }
-
-    #[test]
-    fn validate_rfc5322_ok() {
-        let mut header = vec![
-            (
-                FieldName::new("Date").unwrap(),
-                FieldBody::new(*b" Mon, 22 May 2023 11:59:28 +0200").unwrap(),
-            ),
-            (
-                FieldName::new("From").unwrap(),
-                FieldBody::new(*b" me").unwrap(),
-            ),
-            (
-                FieldName::new("To").unwrap(),
-                FieldBody::new(*b" you").unwrap(),
-            ),
-        ];
-
-        assert_eq!(validate_rfc5322(&header), Ok(()));
-
-        header.push((
-            FieldName::new("fRom").unwrap(),
-            FieldBody::new(*b" me too").unwrap(),
-        ));
-
-        assert_eq!(validate_rfc5322(&header), Err(HeaderValidationError::NoSingleFrom));
     }
 }

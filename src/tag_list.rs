@@ -165,7 +165,11 @@ pub fn parse_colon_separated_value(value: &str) -> Vec<&str> {
 pub fn parse_base64_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
     debug_assert!(is_tag_value(value));
 
-    let value = strip_fws_from_tag_value(value);
+    // A tag value contains only well-formed FWS, so may strip indiscriminately:
+    let value: String = value
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
+        .collect();
 
     util::decode_base64(&value).map_err(|_| TagListParseError::Syntax)
 }
@@ -213,17 +217,6 @@ pub fn is_tag_name(s: &str) -> bool {
 
 pub fn is_tag_value(s: &str) -> bool {
     s.is_empty() || matches!(strip_tag_value(s), Some((rest, _)) if rest.is_empty())
-}
-
-/// Strips folding whitespace from a well-formed tag value.
-pub fn strip_fws_from_tag_value(value: &str) -> String {
-    debug_assert!(is_tag_value(value));
-
-    // A tag value contains only well-formed FWS, so may strip indiscriminately:
-    value
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
-        .collect()
 }
 
 fn trim_surrounding_fws(s: &str) -> &str {

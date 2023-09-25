@@ -299,7 +299,8 @@ impl FromStr for DkimKeyRecord {
     type Err = DkimKeyRecordError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let tag_list = TagList::from_str(s).map_err(|_| DkimKeyRecordError::TagListFormat)?;
+        let tag_list = TagList::from_str(s)
+            .map_err(|_| DkimKeyRecordError::TagListFormat)?;
 
         Self::from_tag_list(&tag_list)
     }

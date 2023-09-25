@@ -27,12 +27,12 @@ use crate::{
     crypto,
     header::{FieldName, HeaderFields},
     message_hash::{
-        body_hasher_key, BodyHasher, BodyHasherBuilder, BodyHashError, BodyHashResults,
+        body_hasher_key, BodyHashError, BodyHashResults, BodyHasher, BodyHasherBuilder,
         BodyHasherStance,
     },
     record::{DkimKeyRecord, DkimKeyRecordError},
     signature::{DkimSignature, DkimSignatureError, DkimSignatureErrorKind},
-    util::{self, CanonicalStr},
+    util::CanonicalStr,
     verifier::header::{HeaderVerifier, VerifyStatus},
 };
 use std::{
@@ -44,6 +44,9 @@ use std::{
 use tracing::trace;
 
 /// Configuration for a verifier.
+///
+/// The configuration settings to do with verification policy map to a
+/// [`PolicyError`] variant.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     /// The maximum duration of public key record lookups. When this duration is
@@ -58,16 +61,31 @@ pub struct Config {
     /// The default is 10.
     pub max_signatures: usize,
 
-    /// If given required headers are not signed in a DKIM signature, the
-    /// signature will not validate. Note that the header *From* is always
-    /// required by the RFC independent of this configuration setting.
+    /// If any of the given header names is not included in a DKIM signature’s
+    /// *h=* tag, the signature will not validate. Note that the header *From*
+    /// is always required to be included by RFC 6376 independent of this
+    /// configuration setting.
     ///
-    /// By default, no additional headers are required to be signed.
-    pub required_signed_headers: Vec<FieldName>,
+    /// By default, no additional headers are required to be included in a
+    /// signature.
+    pub headers_required_in_signature: Vec<FieldName>,
 
-    // TODO rename min_rsa_key_bits ?
-    /// Minimum acceptable key size in bits. When the key size of an RSA public
-    /// key is below this limit, the signature will not validate.
+    /// If any of the given header names appears in the message header, but not
+    /// all occurrences of like-named headers are included in the DKIM
+    /// signature, then the signature will not validate.
+    ///
+    /// The default includes the *From* header. (This default setting renders
+    /// the attack in RFC 6376, section 8.15 ineffective, as an added *From*
+    /// header would invalidate the signature. In other words it makes the
+    /// common ‘oversigning’ mitigation applied to the *From* header
+    /// unnecessary.)
+    pub headers_forbidden_to_be_unsigned: Vec<FieldName>,
+
+    /// Minimum acceptable key size in bits. This limit is applied to keys that
+    /// provide a key size in
+    /// [`VerifyingKey::key_size`][crate::crypto::VerifyingKey::key_size]
+    /// (currently RSA keys only). When the key size of a verifying key is below
+    /// this value, the signature will not validate.
     ///
     /// Note that there is a compile-time hard lower bound of acceptable key
     /// sizes, which will lead to failure to validate independent of this
@@ -134,7 +152,8 @@ impl Default for Config {
         Self {
             lookup_timeout: Duration::from_secs(10),
             max_signatures: 10,
-            required_signed_headers: vec![],
+            headers_required_in_signature: vec![],
+            headers_forbidden_to_be_unsigned: vec![FieldName::new("From").unwrap()],
             min_key_bits: 1024,
             allow_sha1: false,
             forbid_unsigned_content: false,
@@ -260,19 +279,48 @@ impl VerificationStatus {
 /// All policy errors can be disabled via [`Config`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PolicyError {
-    // TODO should this be named "-Header-" (sg)?
-    RequiredHeadersNotSigned,
+    /// A header required to be signed is not included in the signature.
+    ///
+    /// Configurable through [`Config::headers_required_in_signature`].
+    RequiredHeaderNotSigned,
+
+    /// Not all instances of a particular header name included in the signature
+    /// are signed.
+    ///
+    /// Configurable through [`Config::headers_forbidden_to_be_unsigned`].
+    UnsignedHeaderOccurrence,
+
+    /// A signature using the *l=* tag covered only part of the message body.
+    ///
+    /// Configurable through [`Config::forbid_unsigned_content`].
     UnsignedContent,
+
+    /// Signature is expired.
+    ///
+    /// Configurable through [`Config::allow_expired`].
     SignatureExpired,
+
+    /// A signature’s timestamp is in the future.
+    ///
+    /// Configurable through [`Config::allow_timestamp_in_future`].
     TimestampInFuture,
+
+    /// Signature algorithm using SHA-1 hash algorithm.
+    ///
+    /// Configurable through [`Config::allow_sha1`].
     Sha1HashAlgorithm,
+
+    /// Public key of smaller than acceptable key size.
+    ///
+    /// Configurable through [`Config::min_key_bits`].
     KeyTooSmall,
 }
 
 impl Display for PolicyError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RequiredHeadersNotSigned => write!(f, "required headers not signed"),
+            Self::RequiredHeaderNotSigned => write!(f, "required header not signed"),
+            Self::UnsignedHeaderOccurrence => write!(f, "unsigned occurrence of signed header"),
             Self::UnsignedContent => write!(f, "unsigned content in message body"),
             Self::SignatureExpired => write!(f, "signature expired"),
             Self::TimestampInFuture => write!(f, "timestamp in future"),
@@ -510,7 +558,7 @@ struct VerifierTask {
 ///
 /// // Note: Enable Cargo feature `trust-dns-resolver` to make an implementation
 /// // of trait `LookupTxt` available for Trust-DNS’s `TokioAsyncResolver`.
-/// let resolver;  // = TokioAsyncResolver::tokio(...);
+/// let resolver /* = TokioAsyncResolver::tokio(...) */;
 /// # resolver = MockLookupTxt;
 ///
 /// let config = Config::default();
@@ -542,10 +590,13 @@ pub struct Verifier {
 
 impl Verifier {
     /// Initiates a message verification process by verifying the header of a
-    /// message.
+    /// message. Returns a verifier for all signatures in the given header, or
+    /// `None` if the header contains no signatures.
     ///
-    /// Returns a verifier for all signatures in the given header, or `None` if
-    /// the header contains no signatures.
+    /// The `resolver` parameter is a reference to a type that implements
+    /// [`LookupTxt`]; the trait `LookupTxt` is an abstraction for DNS
+    /// resolution. The parameter is also `Clone`, in order to share the
+    /// resolver among concurrent key record lookup tasks.
     pub async fn verify_header<T>(
         resolver: &T,
         headers: &HeaderFields,
@@ -654,7 +705,7 @@ fn verify_body_hash(
     sig: &DkimSignature,
     body_hash_results: &BodyHashResults,
 ) -> VerificationStatus {
-    trace!("now checking body hash for signature");
+    trace!(domain = %sig.domain, selector = %sig.selector, "checking body hash for signature");
 
     let key = body_hasher_key(sig);
 
@@ -664,18 +715,20 @@ fn verify_body_hash(
 
     match body_hash_result {
         Ok((h, _)) => {
-            if h != &sig.body_hash {
-                trace!("body hash mismatch: {}", util::encode_base64(h));
-                VerificationStatus::Failure(VerificationError::BodyHashMismatch)
-            } else {
+            if h == &sig.body_hash {
                 trace!("body hash matched");
                 VerificationStatus::Success
+            } else {
+                trace!("body hash did not match");
+                VerificationStatus::Failure(VerificationError::BodyHashMismatch)
             }
         }
         Err(BodyHashError::InsufficientInput) => {
+            trace!("insufficient message body content for body hash");
             VerificationStatus::Failure(VerificationError::InsufficientContent)
         }
         Err(BodyHashError::InputTruncated) => {
+            trace!("unsigned content in message body not allowed due to local policy");
             VerificationStatus::Failure(VerificationError::Policy(PolicyError::UnsignedContent))
         }
     }

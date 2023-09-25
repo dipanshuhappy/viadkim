@@ -36,8 +36,12 @@ pub async fn perform_signing<T>(
 where
     T: AsRef<SigningKey>,
 {
+    let domain = request.domain;
+    let selector = request.selector;
     let algorithm = request.algorithm;
     let canonicalization = request.canonicalization;
+
+    trace!(%domain, %selector, "performing signing");
 
     // calculate body hash
 
@@ -51,6 +55,7 @@ where
     let (body_hash, final_len) = match hasher_result {
         Ok((h, final_len)) => (h.clone(), *final_len),
         Err(BodyHashError::InsufficientInput) => {
+            trace!("not signing, got insufficient message body content");
             return Err(SigningError::InsufficientContent);
         }
         Err(BodyHashError::InputTruncated) => {
@@ -64,6 +69,7 @@ where
             match final_len.try_into() {
                 Ok(n) => Some(n),
                 Err(_) => {
+                    trace!("not signing, message too large");
                     return Err(SigningError::Overflow);
                 }
             }
@@ -113,11 +119,11 @@ where
         algorithm,
         body_hash,
         canonicalization: request.canonicalization,
-        domain: request.domain,
+        domain,
         signed_headers: signed_headers.into(),
         identity: request.identity,
         body_length,
-        selector: request.selector,
+        selector,
         timestamp,
         expiration,
         copied_headers,
@@ -163,7 +169,6 @@ async fn produce_signature(
 
     assert_eq!(signing_key.key_type(), algorithm.key_type());
 
-    // note artificial await point here, yields to runtime if many signatures
     let signature_data = sign_hash(signing_key, hash_alg, &data_hash)
         .await?
         .into_boxed_slice();

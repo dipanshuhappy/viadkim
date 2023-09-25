@@ -253,7 +253,6 @@ impl BodyHashResults {
 mod tests {
     use super::*;
     use crate::util;
-    use bstr::ByteSlice;
 
     fn key_simple() -> BodyHasherKey {
         (None, HashAlgorithm::Sha256, CanonicalizationAlgorithm::Simple)
@@ -339,20 +338,19 @@ mod tests {
         let mut hasher = hasher.build();
 
         let body = b"\
-Hello Proff,
-
-Let\xe2\x80\x99s try this again, with line
-breaks and empty lines even.
-
-Ciao, und bis bald
-
-
--- 
-David
+Hello Proff,\r\n\
+\r\n\
+Let\xe2\x80\x99s try this again, with line\r\n\
+breaks and empty lines even.\r\n\
+\r\n\
+Ciao, und bis bald\r\n\
+\r\n\
+\r\n\
+-- \r\n\
+David\r\n\
 ";
-        let body = body.replace("\n", "\r\n");
 
-        assert_eq!(hasher.hash_chunk(&body), BodyHasherStance::Interested);
+        assert_eq!(hasher.hash_chunk(body), BodyHasherStance::Interested);
 
         let results = hasher.finish();
 

@@ -26,6 +26,7 @@ use std::{
     io::{self, ErrorKind},
 };
 use tokio::{task::JoinSet, time};
+use tracing::trace;
 
 struct QueriesBuilder {
     // A-label form domain/selector, mapped to collection of signature header indexes
@@ -56,6 +57,8 @@ impl QueriesBuilder {
         let mut set = JoinSet::new();
 
         for ((domain, selector), indexes) in self.lookup_pairs {
+            trace!(%domain, %selector, "spawning DNS query");
+
             let resolver = resolver.clone();
 
             let lookup_timeout = config.lookup_timeout;
@@ -178,12 +181,12 @@ mod tests {
 
     #[tokio::test]
     async fn queries_spawn_ok() {
-        fn domain_and_selector(domain: &str, selector: &str) -> (DomainName, Selector) {
+        let domain_and_selector = |domain, selector| {
             (
                 DomainName::new(domain).unwrap(),
                 Selector::new(selector).unwrap(),
             )
-        }
+        };
 
         let (d1, s1) = domain_and_selector("example.com", "sel");
         let (d2, s2) = domain_and_selector("Example.中国", "xn--9j8hqg");
