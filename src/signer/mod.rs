@@ -25,8 +25,8 @@ use crate::{
     message_hash::{BodyHasher, BodyHasherBuilder, BodyHasherStance},
     parse,
     signature::{
-        Canonicalization, DkimSignature, DomainName, Identity, Selector, SigningAlgorithm,
-        DKIM_SIGNATURE_NAME,
+        Canonicalization, CanonicalizationAlgorithm, DkimSignature, DomainName, Identity, Selector,
+        SigningAlgorithm, DKIM_SIGNATURE_NAME,
     },
     signer::format::LINE_WIDTH,
     tag_list,
@@ -292,6 +292,8 @@ impl<T> SignRequest<T> {
         algorithm: SigningAlgorithm,
         signing_key: T,
     ) -> Self {
+        use CanonicalizationAlgorithm::*;
+
         // The default validity period of five days follows the traditionally
         // recommended time for retrying message delivery; see RFC 5321, section
         // 4.5.4.1: ‘Retries continue until the message is transmitted or the
@@ -300,11 +302,14 @@ impl<T> SignRequest<T> {
         // Five days is also used as duration in the example in RFC 6376, §3.5.
         let five_days = Duration::from_secs(60 * 60 * 24 * 5);
 
+        // Canonicalization relaxed/simple is a good, compatible default.
+        let canonicalization = Canonicalization::from((Relaxed, Simple));
+
         Self {
             signing_key,
 
             algorithm,
-            canonicalization: Default::default(),
+            canonicalization,
             domain,
             header_selection: Default::default(),
             identity: None,
@@ -504,10 +509,10 @@ struct SignerTask<T> {
 ///
 /// assert_eq!(
 ///     signature.format_header().to_string(),
-///     "DKIM-Signature: v=1; d=example.com; s=selector; a=ed25519-sha256;\r\n\
+///     "DKIM-Signature: v=1; d=example.com; s=selector; a=ed25519-sha256; c=relaxed;\r\n\
 ///     \tt=1687435395; x=1687867395; h=Date:Subject:To:From; bh=1zGfaauQ3vmMhm21CGMC23\r\n\
-///     \taJE1JrOoKsgT/wvw9owzE=; b=Ny5/l088Iubyzlq56ab9Xe6/9YDcIvydie0GOI6CEsaIdktjLlA\r\n\
-///     \tOvKuE7wU4203PIMx0MuW7lFLpdRIcPDl3Cg=="
+///     \taJE1JrOoKsgT/wvw9owzE=; b=neMHc/e6jrqSscL1pc/fTxOU/CjuvYzvnGbTABQvYkzlIvazqp3\r\n\
+///     \tiR7RXUZi0CbOAq13IEUZPc6S0/63cfAO4CA=="
 /// );
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// # }).unwrap();

@@ -28,6 +28,11 @@ pub fn get_public_key_size(k: &RsaPublicKey) -> usize {
     k.size() * 8
 }
 
+// Note that openssl can read key data even if followed by excess content. We
+// have seen such data in the wild, eg two concatenated public keys in a p= tag
+// (openssl would just use the first key). The rsa crate is more strict and does
+// not accept such keys.
+
 /// Reads an RSA public key from the given slice of bytes for verification.
 pub fn read_rsa_public_key(key_data: &[u8]) -> Result<RsaPublicKey, VerificationError> {
     // First try reading the bytes as *SubjectPublicKeyInfo* format

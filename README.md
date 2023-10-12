@@ -54,8 +54,11 @@ signature algorithms such as addition of *ed25519-sha256* and retirement of
 
 This is a [Rust] library. Include viadkim in `Cargo.toml` as usual.
 
-Two structs provide the entry points to DKIM processing with viadkim: [`Signer`]
-for signing a message, and [`Verifier`] for verifying a message’s signatures.
+Two structs provide the entry points to DKIM processing with viadkim:
+
+* [`Signer`] for signing a message
+* [`Verifier`] for verifying a message’s signatures
+
 See the [API documentation] for usage instructions.
 
 The minimum supported Rust version is 1.65.0.

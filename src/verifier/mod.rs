@@ -542,10 +542,11 @@ struct VerifierTask {
 /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
 /// use viadkim::*;
 ///
-/// let header = "DKIM-Signature: v=1; d=example.com; s=selector; a=ed25519-sha256;\r\n\
+/// let header =
+///     "DKIM-Signature: v=1; d=example.com; s=selector; a=ed25519-sha256; c=relaxed;\r\n\
 ///     \tt=1687435395; x=1687867395; h=Date:Subject:To:From; bh=1zGfaauQ3vmMhm21CGMC23\r\n\
-///     \taJE1JrOoKsgT/wvw9owzE=; b=Ny5/l088Iubyzlq56ab9Xe6/9YDcIvydie0GOI6CEsaIdktjLlA\r\n\
-///     \tOvKuE7wU4203PIMx0MuW7lFLpdRIcPDl3Cg==\r\n\
+///     \taJE1JrOoKsgT/wvw9owzE=; b=neMHc/e6jrqSscL1pc/fTxOU/CjuvYzvnGbTABQvYkzlIvazqp3\r\n\
+///     \tiR7RXUZi0CbOAq13IEUZPc6S0/63cfAO4CA==\r\n\
 ///     Received: from submit.example.com by mail.example.com\r\n\
 ///     \twith ESMTPSA id A6DE7475; Thu, 22 Jun 2023 14:03:14 +0200\r\n\
 ///     From: me@example.com\r\n\
