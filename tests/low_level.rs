@@ -40,7 +40,7 @@ async fn low_level_sign() {
 
     let body_hash = viadkim::encode_base64(body_hash1);
 
-    let ident = quoted_printable::encode(b"\"me;you\"@sub.example.com", false);
+    let ident = quoted_printable::encode(b"\"me;you\"@sub.example.com", None);
 
     let sig_name = "DKIM-Signature";
     let mut sig_value = format!(

@@ -132,6 +132,7 @@ struct Fmt<'a> {
     width: usize,
     indent: &'a str,
     last: bool,
+    ascii: bool,
 }
 
 fn format_without_signature(
@@ -141,6 +142,7 @@ fn format_without_signature(
 ) -> (String, usize) {
     let width = format.line_width.into();
     let indent = &format.indentation;
+    let ascii = format.ascii_only;
 
     // First, find out which tags will be included in which order in the
     // generated header.
@@ -161,7 +163,7 @@ fn format_without_signature(
     for (index, tag_name) in tag_names.into_iter().enumerate() {
         let last = index == last_index;
 
-        let fmt = Fmt { width, indent, last };
+        let fmt = Fmt { width, indent, last, ascii };
 
         match tag_name {
             "a" => format_tag_a(out, i, fmt, sig.algorithm),
@@ -207,19 +209,44 @@ fn format_tag_v(out: &mut String, i: &mut usize, fmt: Fmt<'_>) {
 }
 
 fn format_tag_d(out: &mut String, i: &mut usize, fmt: Fmt<'_>, domain: &DomainName) {
-    format_tag(out, i, fmt, "d", &domain.to_unicode());
+    let domain = if fmt.ascii {
+        domain.to_ascii()
+    } else {
+        domain.to_unicode()
+    };
+
+    format_tag(out, i, fmt, "d", &domain);
 }
 
 fn format_tag_s(out: &mut String, i: &mut usize, fmt: Fmt<'_>, selector: &Selector) {
-    format_tag(out, i, fmt, "s", &selector.to_unicode());
+    let selector = if fmt.ascii {
+        selector.to_ascii()
+    } else {
+        selector.to_unicode()
+    };
+
+    format_tag(out, i, fmt, "s", &selector);
 }
 
 fn format_tag_i(out: &mut String, i: &mut usize, fmt: Fmt<'_>, identity: &Identity) {
     let Identity { local_part, domain } = identity;
-    let d = domain.to_unicode();
+
+    let d = if fmt.ascii {
+        domain.to_ascii()
+    } else {
+        domain.to_unicode()
+    };
 
     let identity = match local_part {
-        Some(l) => format!("{}@{d}", quoted_printable::encode(l.as_bytes(), false)),
+        Some(l) => {
+            let encode = if fmt.ascii {
+                quoted_printable::encode_ascii_only
+            } else {
+                quoted_printable::encode
+            };
+
+            format!("{}@{d}", encode(l.as_bytes(), None))
+        }
         None => format!("@{d}"),
     };
 
@@ -332,7 +359,7 @@ fn format_tag_name_b(
     b_tag_len: usize,
     insertion_i: &mut Option<usize>,
 ) {
-    let Fmt { width, indent, last } = fmt;
+    let Fmt { width, indent, last, .. } = fmt;
 
     // "b=" + 1 char (we prefer at least one additional char behind =)
     let taglen = 3;
@@ -364,7 +391,16 @@ fn format_tag_name_b(
 fn format_tag_z(out: &mut String, i: &mut usize, fmt: Fmt<'_>, value: &[(FieldName, Box<[u8]>)]) {
     debug_assert!(!value.is_empty());
 
-    let Fmt { width, indent, last } = fmt;
+    let Fmt { width, indent, last, ascii } = fmt;
+
+    let format_field_value = |value| {
+        let encode = if ascii {
+            quoted_printable::encode_ascii_only
+        } else {
+            quoted_printable::encode
+        };
+        encode(value, Some('|'))
+    };
 
     let mut iter = value.iter().map(|(f, v)| (f.as_ref(), v));
 
@@ -378,7 +414,7 @@ fn format_tag_z(out: &mut String, i: &mut usize, fmt: Fmt<'_>, value: &[(FieldNa
     advance_i_initial(out, i, taglen, fmt);
     write!(out, "z={first_name}:").unwrap();
 
-    let val = quoted_printable::encode(val, true);
+    let val = format_field_value(val);
     format_chunks_into_string(out, i, fmt, &val);
 
     for (name, val) in iter {
@@ -398,7 +434,7 @@ fn format_tag_z(out: &mut String, i: &mut usize, fmt: Fmt<'_>, value: &[(FieldNa
             *i = indent.len() + namelen;
         }
 
-        let val = quoted_printable::encode(val, true);
+        let val = format_field_value(val);
         format_chunks_into_string(out, i, fmt, &val);
     }
 
@@ -487,7 +523,7 @@ pub fn insert_signature_data(
     debug_assert!(insertion_index <= formatted_header.len());
 
     // TODO revisit Fmt struct
-    let fmt = Fmt { width: line_width, indent, last: false /*notused*/};
+    let fmt = Fmt { width: line_width, indent, last: false /*notused*/, ascii: false /*notused*/};
 
     let s = util::encode_base64(signature_data);
     // note s contains only ASCII now
@@ -516,7 +552,7 @@ mod tests {
     fn format_tag_h_ok() {
         let mut out = String::new();
         let mut i = 0;
-        let fmt = Fmt { width: 10, indent: "  ", last: false };
+        let fmt = Fmt { width: 10, indent: "  ", last: false, ascii: false };
         let value = [FieldName::new("Ribbit").unwrap()];
 
         format_tag_h(&mut out, &mut i, fmt, &value);

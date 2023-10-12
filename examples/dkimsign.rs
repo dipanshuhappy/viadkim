@@ -40,11 +40,12 @@ async fn main() {
     request.valid_duration = None;
     request.copy_headers = false;
     // request.body_length = viadkim::signer::BodyLength::MessageContent;
-    // request.identity = Some(viadkim::signature::Identity::new("\"abc|;de\"@中文.gluet.ch").unwrap());
+    // request.identity = Some(viadkim::signature::Identity::new("\"abc|;привет\"@中文.gluet.ch").unwrap());
     // request.algorithm = SigningAlgorithm::RsaSha1;
     // request.format.tag_order = Some(Box::new(|a, b| a.cmp(b)));
     // request.format.line_width = 64.try_into().unwrap();
     // request.format.indentation = "  ".into();
+    // request.format.ascii_only = true;
     // request.ext_tags = vec![("r".into(), "y".into())];
 
     let mut msg = String::new();

@@ -28,23 +28,49 @@ use std::{
 };
 
 /// Encodes bytes as a DKIM-Quoted-Printable string.
-pub fn encode(mut bytes: &[u8], encode_bar: bool) -> String {
+///
+/// Use the optional argument to require encoding of some dkim-safe-char (such
+/// as the vertical bar in *z=* tag value).
+pub fn encode(bytes: &[u8], encode_dkim_safe_char: Option<char>) -> String {
+    encode_internal(bytes, encode_dkim_safe_char, false)
+}
+
+/// Encodes bytes as an ASCII-only DKIM-Quoted-Printable string.
+///
+/// Use the optional argument to require encoding of some dkim-safe-char (such
+/// as the vertical bar in *z=* tag value).
+pub fn encode_ascii_only(bytes: &[u8], encode_dkim_safe_char: Option<char>) -> String {
+    encode_internal(bytes, encode_dkim_safe_char, true)
+}
+
+// According to erratum 4810, in the future `special_char` could also be
+// `Some(':')` when generating the q= tag.
+fn encode_internal(mut bytes: &[u8], special_char: Option<char>, ascii_only: bool) -> String {
     fn encode_byte(s: &mut String, b: u8) {
         write!(s, "={b:02X}").unwrap();
     }
+
+    let is_dkim_safe = |c| {
+        let f = if ascii_only {
+            is_dkim_safe_char_ascii_only
+        } else {
+            is_dkim_safe_char
+        };
+        f(c) && special_char != Some(c)
+    };
 
     let mut result = String::with_capacity(bytes.len());
 
     while !bytes.is_empty() {
         if let Some(chunk) = util::next_utf8_chunk(bytes) {
             for c in chunk.chars() {
-                // Some ASCII characters (maybe including the vertical bar) and
-                // all non-ASCII Unicode characters can be used as-is. Some
-                // ASCII characters (and ill-formed UTF-8) need encoding.
-                if is_dkim_safe_char(c) && !(c == '|' && encode_bar) {
+                if is_dkim_safe(c) {
                     result.push(c);
                 } else {
-                    encode_byte(&mut result, u8::try_from(c).unwrap());
+                    let mut buf = [0; 4];
+                    for b in c.encode_utf8(&mut buf).bytes() {
+                        encode_byte(&mut result, b);
+                    }
                 }
             }
             bytes = &bytes[chunk.len()..];
@@ -204,9 +230,17 @@ fn u8_from_digits(c1: u8, c2: u8) -> u8 {
     to_u8(c1) * 0x10 + to_u8(c2)
 }
 
+// The advice in §2.11, ‘Use of characters not listed as "mail-safe" in
+// [RFC2049] is NOT RECOMMENDED’, is outdated and therefore disregarded. (The
+// term ‘mail-safe’ does not actually occur in RFC 2049, but probably refers to
+// item 7 in section 3.)
 fn is_dkim_safe_char(c: char) -> bool {
     // printable ASCII without ; and = plus any non-ASCII UTF-8
     matches!(c, '!'..=':' | '<' | '>'..='~') || !c.is_ascii()
+}
+
+fn is_dkim_safe_char_ascii_only(c: char) -> bool {
+    matches!(c, '!'..=':' | '<' | '>'..='~')
 }
 
 fn is_hexdig(c: char) -> bool {
@@ -219,17 +253,12 @@ mod tests {
 
     #[test]
     fn encode_basic() {
-        let s = encode(b"abc|; d\xf0\x9f\x8f\xa0\xfee", true);
-        assert_eq!(s, "abc=7C=3B=20d🏠=FEe");
-    }
+        let bytes = b"a=|; b\n\xf0\x9f\x8f\xa0\xfec";
 
-    #[test]
-    fn encode_tag_list() {
-        let example = b" v = \xff1;\xe6\x88\x91\r\n\ta=rsa-sha256; s=brisbane; v=|";
-        assert_eq!(
-            encode(example, false),
-            "=20v=20=3D=20=FF1=3B我=0D=0A=09a=3Drsa-sha256=3B=20s=3Dbrisbane=3B=20v=3D|"
-        );
+        assert_eq!(encode(bytes, None), "a=3D|=3B=20b=0A🏠=FEc");
+        assert_eq!(encode(bytes, Some('|')), "a=3D=7C=3B=20b=0A🏠=FEc");
+        assert_eq!(encode_ascii_only(bytes, None), "a=3D|=3B=20b=0A=F0=9F=8F=A0=FEc");
+        assert_eq!(encode_ascii_only(bytes, Some('|')), "a=3D=7C=3B=20b=0A=F0=9F=8F=A0=FEc");
     }
 
     #[test]

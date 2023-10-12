@@ -194,15 +194,26 @@ impl Error for RequestError {}
 pub struct OutputFormat {
     /// The header name, must be equal to `DKIM-Signature` ignoring case.
     pub header_name: String,
+
     /// The maximum line width in characters to use when breaking lines. The
     /// default is 78.
     pub line_width: NonZeroUsize,
+
     /// The indentation whitespace to use for continuation lines. Must be a
     /// non-empty sequence of space and tab characters. The default is `"\t"`.
     pub indentation: String,
+
     /// A comparator applied to tag names that determines the order of the tags
     /// included in the signature.
     pub tag_order: Option<Box<dyn Fn(&str, &str) -> Ordering + Send + Sync>>,
+
+    /// Whether to emit only ASCII, even when internationalised domain name
+    /// labels or other items are included in a signature. The default is false.
+    ///
+    /// Enabling this setting may be necessary for interoperation with legacy
+    /// systems. However, according to RFC 8616, section 5 these items *should*
+    /// be in U-label (Unicode) form.
+    pub ascii_only: bool,
 }
 
 impl Default for OutputFormat {
@@ -212,6 +223,7 @@ impl Default for OutputFormat {
             line_width: LINE_WIDTH.try_into().unwrap(),
             indentation: "\t".into(),
             tag_order: None,
+            ascii_only: false,
         }
     }
 }
@@ -231,6 +243,7 @@ impl fmt::Debug for OutputFormat {
             .field("line_width", &self.line_width)
             .field("indentation", &self.indentation)
             .field("tag_order", &self.tag_order.as_deref().map(ClosureDebug))
+            .field("ascii_only", &self.ascii_only)
             .finish()
     }
 }
