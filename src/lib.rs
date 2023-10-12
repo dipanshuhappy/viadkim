@@ -90,5 +90,7 @@ pub use crate::{
     signature::{DomainName, Selector, SigningAlgorithm},
     signer::{RequestError, SignRequest, Signer, SigningError, SigningResult},
     util::{decode_base64, encode_base64, Base64Error, CanonicalStr},
-    verifier::{Config, VerificationError, VerificationResult, VerificationStatus, Verifier},
+    verifier::{
+        Config, DkimResult, VerificationError, VerificationResult, VerificationStatus, Verifier,
+    },
 };

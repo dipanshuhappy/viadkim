@@ -273,11 +273,11 @@ impl VerifyingKey {
         match key_type {
             KeyType::Rsa => {
                 let public_key = read_rsa_public_key(key_data)?;
-                Ok(VerifyingKey::Rsa(public_key))
+                Ok(Self::Rsa(public_key))
             }
             KeyType::Ed25519 => {
                 let verifying_key = read_ed25519_verifying_key(key_data)?;
-                Ok(VerifyingKey::Ed25519(verifying_key))
+                Ok(Self::Ed25519(verifying_key))
             }
         }
     }
@@ -322,7 +322,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn signing_key_from_pkcs8_pem_ok() {
+    fn signing_key_from_pkcs8_pem() {
         let key = SigningKey::from_pkcs8_pem("no PEM");
         assert_eq!(key.unwrap_err(), DecodeSigningKeyError::InvalidPemDocument);
 

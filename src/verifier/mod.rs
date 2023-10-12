@@ -200,11 +200,11 @@ pub enum VerificationStatus {
 
 impl VerificationStatus {
     /// Converts this verification status to an RFC 8601 DKIM result.
-    pub fn to_dkim_auth_result(&self) -> DkimAuthResult {
+    pub fn to_dkim_result(&self) -> DkimResult {
         use VerificationError::*;
 
         match self {
-            VerificationStatus::Success => DkimAuthResult::Pass,
+            VerificationStatus::Success => DkimResult::Pass,
             VerificationStatus::Failure(error) => match error {
                 DkimSignatureFormat(error) => match error.kind {
                     DkimSignatureErrorKind::Utf8Encoding
@@ -222,7 +222,7 @@ impl VerificationStatus {
                     | DkimSignatureErrorKind::InvalidSelector
                     | DkimSignatureErrorKind::InvalidTimestamp
                     | DkimSignatureErrorKind::InvalidExpiration
-                    | DkimSignatureErrorKind::InvalidCopiedHeaderField => DkimAuthResult::Neutral,
+                    | DkimSignatureErrorKind::InvalidCopiedHeaderField => DkimResult::Neutral,
                     DkimSignatureErrorKind::HistoricAlgorithm
                     | DkimSignatureErrorKind::EmptySignatureTag
                     | DkimSignatureErrorKind::EmptyBodyHashTag
@@ -236,17 +236,17 @@ impl VerificationStatus {
                     | DkimSignatureErrorKind::MissingSignedHeadersTag
                     | DkimSignatureErrorKind::MissingSelectorTag
                     | DkimSignatureErrorKind::DomainMismatch
-                    | DkimSignatureErrorKind::ExpirationNotAfterTimestamp => DkimAuthResult::Permerror,
+                    | DkimSignatureErrorKind::ExpirationNotAfterTimestamp => DkimResult::Permerror,
                 },
-                Overflow => DkimAuthResult::Neutral,
+                Overflow => DkimResult::Neutral,
                 NoKeyFound
                 | InvalidKeyDomain
                 | WrongKeyType
                 | KeyRevoked
                 | DisallowedHashAlgorithm
                 | DomainMismatch
-                | InsufficientContent => DkimAuthResult::Permerror,
-                Timeout | KeyLookup => DkimAuthResult::Temperror,
+                | InsufficientContent => DkimResult::Permerror,
+                Timeout | KeyLookup => DkimResult::Temperror,
                 KeyRecordFormat(error) => match error {
                     DkimKeyRecordError::RecordFormat
                     | DkimKeyRecordError::TagListFormat
@@ -258,17 +258,17 @@ impl VerificationStatus {
                     | DkimKeyRecordError::InvalidBase64
                     | DkimKeyRecordError::InvalidServiceType
                     | DkimKeyRecordError::NoSupportedServiceTypes
-                    | DkimKeyRecordError::InvalidFlag => DkimAuthResult::Neutral,
+                    | DkimKeyRecordError::InvalidFlag => DkimResult::Neutral,
                     DkimKeyRecordError::MisplacedVersionTag
-                    | DkimKeyRecordError::MissingKeyTag => DkimAuthResult::Permerror,
+                    | DkimKeyRecordError::MissingKeyTag => DkimResult::Permerror,
                 },
                 VerificationFailure(error) => match error {
                     crypto::VerificationError::InvalidKey
-                    | crypto::VerificationError::InsufficientKeySize => DkimAuthResult::Permerror,
-                    crypto::VerificationError::VerificationFailure => DkimAuthResult::Fail,
+                    | crypto::VerificationError::InsufficientKeySize => DkimResult::Permerror,
+                    crypto::VerificationError::VerificationFailure => DkimResult::Fail,
                 },
-                BodyHashMismatch => DkimAuthResult::Fail,
-                Policy(_) => DkimAuthResult::Policy,
+                BodyHashMismatch => DkimResult::Fail,
+                Policy(_) => DkimResult::Policy,
             },
         }
     }
@@ -411,7 +411,7 @@ impl Error for VerificationError {
 ///
 /// [RFC 8601]: https://www.rfc-editor.org/rfc/rfc8601
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub enum DkimAuthResult {
+pub enum DkimResult {
     /// The *none* result. This result indicates that a message was not signed.
     /// (Not used in this library.)
     None,
@@ -461,7 +461,7 @@ pub enum DkimAuthResult {
     Permerror,
 }
 
-impl CanonicalStr for DkimAuthResult {
+impl CanonicalStr for DkimResult {
     fn canonical_str(&self) -> &'static str {
         match self {
             Self::None => "none",
@@ -475,13 +475,13 @@ impl CanonicalStr for DkimAuthResult {
     }
 }
 
-impl Display for DkimAuthResult {
+impl Display for DkimResult {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(self.canonical_str())
     }
 }
 
-impl fmt::Debug for DkimAuthResult {
+impl fmt::Debug for DkimResult {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{self}")
     }
@@ -577,6 +577,7 @@ struct VerifierTask {
 /// let signature = results.into_iter().next().unwrap();
 ///
 /// assert_eq!(signature.status, VerificationStatus::Success);
+/// assert_eq!(signature.status.to_dkim_result(), DkimResult::Pass);
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// # }).unwrap();
 /// ```

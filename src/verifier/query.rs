@@ -85,6 +85,10 @@ async fn look_up_records<T: LookupTxt + ?Sized>(
     domain: &str,
     selector: &str,
 ) -> QueryResult {
+    fn parse_utf8(txt: io::Result<Vec<u8>>) -> io::Result<String> {
+        txt.and_then(|s| String::from_utf8(s).map_err(|_| ErrorKind::InvalidData.into()))
+    }
+
     // Note the trailing dot: only absolute queries.
     let dname = format!("{selector}._domainkey.{domain}.");
 
@@ -95,15 +99,22 @@ async fn look_up_records<T: LookupTxt + ?Sized>(
     // However, note §6.1.2: ‘If the query for the public key returns multiple
     // key records, the Verifier can choose one of the key records or may cycle
     // through the key records […]. The order of the key records is
-    // unspecified.’ So, as a courtesy we do try at most three keys.
+    // unspecified.’ So, as a courtesy we do try at most three selected keys.
+    // This is an implementation detail.
 
-    let result = txts
-        .into_iter()
-        .take(3)
-        .map(|txt| {
-            txt.and_then(|s| String::from_utf8(s).map_err(|_| ErrorKind::InvalidData.into()))
-        })
-        .collect();
+    let mut result = vec![];
+
+    let mut last = None;
+    for (i, txt) in txts.into_iter().enumerate() {
+        if i < 2 {
+            result.push(parse_utf8(txt));
+        } else {
+            last = Some(txt);
+        }
+    }
+    if let Some(txt) = last {
+        result.push(parse_utf8(txt));
+    }
 
     Ok(result)
 }
@@ -161,8 +172,8 @@ mod tests {
                         Ok(vec![
                             Ok(b"one".to_vec()),
                             Ok(b"two\xff\x00".to_vec()),
-                            Err(ErrorKind::UnexpectedEof.into()),
                             Ok(b"three".to_vec()),
+                            Err(ErrorKind::Unsupported.into()),
                         ])
                     }
                     "xn--9j8hqg._domainkey.example.xn--fiqs8s." => {
@@ -224,7 +235,7 @@ mod tests {
         let mut iter = txts.into_iter();
         assert_eq!(iter.next().unwrap().unwrap(), "one");
         assert_eq!(iter.next().unwrap().unwrap_err().kind(), ErrorKind::InvalidData);
-        assert_eq!(iter.next().unwrap().unwrap_err().kind(), ErrorKind::UnexpectedEof);
+        assert_eq!(iter.next().unwrap().unwrap_err().kind(), ErrorKind::Unsupported);
 
         time::resume();
     }

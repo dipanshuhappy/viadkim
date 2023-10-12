@@ -315,7 +315,15 @@ pub struct Identity {
 impl Identity {
     /// Creates a new agent or user identifier from the given string.
     pub fn new(s: &str) -> Result<Self, ParseIdentityError> {
-        let (local_part, domain) = s.rsplit_once('@').ok_or(ParseIdentityError)?;
+        // An oddity: Our `DomainName` type allows about every character that is
+        // syntactically legal in a DKIM signature, including `@`. For
+        // consistency, if you can manually create an identity `@@example.com`,
+        // it should also be possible to parse such a thing. Thus we split not
+        // on the first @ looking from the right, but on the first of a sequence
+        // of @’s – however unlikely that may be.
+        let mut i = s.rfind('@').ok_or(ParseIdentityError)?;
+        i -= s[..i].bytes().rev().take_while(|b| *b == b'@').count();
+        let (local_part, domain) = (&s[..i], &s[i + 1..]);
 
         let local_part = if local_part.is_empty() {
             None
@@ -1120,6 +1128,7 @@ mod tests {
         assert!(DomainName::new("c,m").is_ok());
         assert!(DomainName::new("example.com").is_ok());
         assert!(DomainName::new("_abc.example.com").is_ok());
+        assert!(DomainName::new("_$@.example.com").is_ok());
         assert!(DomainName::new("中国").is_ok());
         assert!(DomainName::new("example.中国").is_ok());
         assert!(DomainName::new("☕.example.中国").is_ok());
@@ -1175,8 +1184,9 @@ mod tests {
     fn identity_ok() {
         assert!(Identity::new("我@☕.example.中国").is_ok());
         assert!(Identity::new("\"我\"@☕.example.中国").is_ok());
+        assert!(Identity::new("me@@☕.example.中国").is_ok());
 
-        assert!(Identity::new("me@@☕.example.中国").is_err());
+        assert!(Identity::new("me<@☕.example.中国").is_err());
     }
 
     #[test]
