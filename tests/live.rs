@@ -1,6 +1,6 @@
 pub mod common;
 
-use trust_dns_resolver::TokioAsyncResolver;
+use hickory_resolver::TokioAsyncResolver;
 use viadkim::verifier::{Config, VerificationStatus};
 
 /// Verify my signatures on a real message.

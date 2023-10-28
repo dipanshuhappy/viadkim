@@ -240,13 +240,13 @@ mod tests {
         time::resume();
     }
 
-    #[cfg(feature = "trust-dns-resolver")]
+    #[cfg(feature = "hickory-resolver")]
     #[tokio::test]
     #[ignore = "depends on live DNS records"]
     async fn look_up_live_dkim_key_record() {
         use crate::record::DkimKeyRecord;
+        use hickory_resolver::TokioAsyncResolver;
         use std::str::FromStr;
-        use trust_dns_resolver::TokioAsyncResolver;
 
         let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default());
 

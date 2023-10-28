@@ -1,6 +1,6 @@
+use hickory_resolver::TokioAsyncResolver;
 use std::{env, process};
 use tokio::io::{self, AsyncReadExt};
-use trust_dns_resolver::TokioAsyncResolver;
 use viadkim::verifier::{Config, Verifier};
 
 #[tokio::main]

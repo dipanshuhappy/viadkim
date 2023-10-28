@@ -1,5 +1,5 @@
 image: rust
 test:
   script:
-    - cargo test --verbose --features trust-dns-resolver --all-targets
-    - cargo test --verbose --features trust-dns-resolver --doc
+    - cargo test --verbose --features hickory-resolver --all-targets
+    - cargo test --verbose --features hickory-resolver --doc

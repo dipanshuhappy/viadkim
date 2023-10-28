@@ -15,12 +15,12 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 
 use super::LookupTxt;
+use hickory_resolver::{error::ResolveErrorKind, Name, TokioAsyncResolver};
 use std::{
     future::Future,
     io::{self, ErrorKind},
     pin::Pin,
 };
-use trust_dns_resolver::{error::ResolveErrorKind, Name, TokioAsyncResolver};
 
 impl LookupTxt for TokioAsyncResolver {
     type Answer = Box<dyn Iterator<Item = io::Result<Vec<u8>>>>;

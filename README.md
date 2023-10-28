@@ -61,7 +61,7 @@ Two structs provide the entry points to DKIM processing with viadkim:
 
 See the [API documentation] for usage instructions.
 
-The minimum supported Rust version is 1.65.0.
+The minimum supported Rust version is 1.67.0.
 
 [Rust]: https://www.rust-lang.org
 [`Signer`]: https://docs.rs/viadkim/0.0.6/viadkim/signer/struct.Signer.html
@@ -93,7 +93,7 @@ data structures.
 Example invocation:
 
 ```
-cargo run --features trust-dns-resolver \
+cargo run --features hickory-resolver \
   --example dkimverify < /path/to/msg-to-verify
 ```
 

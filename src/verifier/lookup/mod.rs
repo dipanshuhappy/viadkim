@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 
-#[cfg(feature = "trust-dns-resolver")]
-mod trust_dns_resolver;
+#[cfg(feature = "hickory-resolver")]
+mod hickory_resolver;
 
 use std::{future::Future, io};
 
@@ -31,8 +31,8 @@ use std::{future::Future, io};
 /// The inner, per-record `std::io::Error` can be used to signal errors
 /// (parsing, encoding) with individual TXT records.
 ///
-/// If **Cargo feature `trust-dns-resolver`** is enabled, an implementation of
-/// this trait for the Trust-DNS `TokioAsyncResolver` is provided.
+/// If **Cargo feature `hickory-resolver`** is enabled, an implementation of
+/// this trait for the Hickory DNS `TokioAsyncResolver` is provided.
 pub trait LookupTxt: Send + Sync {
     /// The answer consisting of TXT records found.
     type Answer: IntoIterator<Item = io::Result<Vec<u8>>>;
