@@ -3,7 +3,7 @@ use tokio::fs;
 use viadkim::{
     crypto::SigningKey,
     header::{HeaderField, HeaderFields},
-    signer::{SignRequest, SigningResult, Signer, SigningError},
+    signer::{SignRequest, SigningOutput, Signer, SigningError},
     verifier::{Config, LookupTxt, VerificationResult, Verifier},
 };
 
@@ -47,7 +47,7 @@ pub async fn sign<I>(
     headers: HeaderFields,
     body: &[u8],
     requests: I,
-) -> Vec<Result<SigningResult, SigningError>>
+) -> Vec<Result<SigningOutput, SigningError>>
 where
     I: IntoIterator<Item = SignRequest<SigningKey>>,
 {

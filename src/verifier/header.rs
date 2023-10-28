@@ -15,7 +15,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    crypto::{HashAlgorithm, KeyType, VerifyingKey},
+    crypto::{self, HashAlgorithm, KeyType, VerifyingKey},
     header::{FieldName, HeaderField, HeaderFields},
     record::{DkimKeyRecord, DkimKeyRecordError, SelectorFlag},
     signature::{
@@ -379,10 +379,9 @@ fn verify_task(
 
         let key_data = &key_record.key_data;
 
-        let key = match VerifyingKey::from_key_data(key_type, key_data) {
+        let key = match read_verifying_key(key_type, key_data) {
             Ok(k) => k,
             Err(e) => {
-                trace!("unusable key data in public key record");
                 task.status = VerifyStatus::Failed(VerificationError::VerificationFailure(e));
                 task.key_record = Some(key_record.clone());
                 continue;
@@ -449,13 +448,31 @@ fn validate_key_record(
     Ok(())
 }
 
+fn read_verifying_key(
+    key_type: KeyType,
+    key_data: &[u8],
+) -> Result<VerifyingKey, crypto::VerificationError> {
+    let key = match VerifyingKey::from_key_data(key_type, key_data) {
+        Ok(k) => k,
+        Err(e) => {
+            trace!("unusable key data in public key record: {e}");
+            return Err(crypto::VerificationError::InvalidKey);
+        }
+    };
+
+    if let Err(e) = key.validate_min_key_size() {
+        trace!("public key too small for DKIM verification");
+        return Err(e);
+    }
+
+    Ok(key)
+}
+
 fn validate_verifying_key(
     verifying_key: &VerifyingKey,
     config: &Config,
 ) -> Result<(), VerificationError> {
     if let Some(n) = verifying_key.key_size() {
-        // Note the hard minimum key size already enforced when constructing an
-        // `RsaPublicKey`.
         if n < config.min_key_bits {
             trace!("public key size not acceptable due to local policy");
             return Err(VerificationError::Policy(PolicyError::KeyTooSmall));

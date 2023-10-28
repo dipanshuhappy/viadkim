@@ -66,18 +66,19 @@ impl BodyLength {
 /// A generator for the timestamp tag.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Timestamp {
+    None,
     #[default]
     Now,
     Exact(u64),
 }
 
-/// Selection of headers to include in the h= tag.
+/// Selection of headers to include in the *h=* tag.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub enum HeaderSelection {
     /// Given some `HeaderFields`, select the headers in the default set.
     #[default]
     Auto,
-    /// Use exactly the headers given here as contents of the h= tag.
+    /// Use exactly the headers given here as contents of the *h=* tag.
     Manual(Vec<FieldName>),
 }
 
@@ -270,7 +271,7 @@ pub struct SignRequest<T> {
     /// The selector to use in the *s=* tag.
     pub selector: Selector,
     /// The timestamp value to record in the *t=* tag.
-    pub timestamp: Option<Timestamp>,
+    pub timestamp: Timestamp,
     /// The duration for which the signature will remain valid (*x=* tag).
     pub valid_duration: Option<Duration>,
     /// Whether to record all headers used to create the signature in the *z=*
@@ -315,7 +316,7 @@ impl<T> SignRequest<T> {
             identity: None,
             body_length: BodyLength::NoLimit,
             selector,
-            timestamp: Some(Timestamp::Now),
+            timestamp: Timestamp::Now,
             valid_duration: Some(five_days),
             copy_headers: false,
             ext_tags: vec![],
@@ -395,48 +396,48 @@ impl Display for SigningError {
 
 impl Error for SigningError {}
 
-struct SigningResultHeaderDisplay<'a> {
+struct SigningOutputHeaderDisplay<'a> {
     name: &'a str,
     value: &'a str,
 }
 
-impl Display for SigningResultHeaderDisplay<'_> {
+impl Display for SigningOutputHeaderDisplay<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.name, self.value)
     }
 }
 
-/// A successful signing result.
+/// The output generated after successful signing.
 ///
 /// The header name and value must be concatenated with only a colon character
-/// in between, no additional whitespace; use [`SigningResult::format_header`].
+/// in between, no additional whitespace; use [`SigningOutput::format_header`].
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct SigningResult {
-    /// The *DKIM-Signature* header name.
+pub struct SigningOutput {
+    /// The generated *DKIM-Signature* header name.
     pub header_name: String,
-    /// The *DKIM-Signature* header value. Continuation lines use CRLF line
-    /// endings.
+    /// The generated *DKIM-Signature* header value. Continuation lines use CRLF
+    /// line endings.
     pub header_value: String,
     /// DKIM signature data used for producing the formatted header.
     pub signature: DkimSignature,
 }
 
-impl SigningResult {
+impl SigningOutput {
     /// Produces a formatted header, consisting of name, colon, and value. The
     /// output uses CRLF line endings.
     pub fn format_header(&self) -> impl Display + '_ {
-        SigningResultHeaderDisplay {
+        SigningOutputHeaderDisplay {
             name: &self.header_name,
             value: &self.header_value,
         }
     }
 
-    /// Converts this result to a header field.
+    /// Converts this output result to a header field.
     ///
     /// # Panics
     ///
     /// Panics if the result’s header name and value are not a well-formed
-    /// header field. (`SigningResult` output produced by `Signer` is always
+    /// header field. (`SigningOutput` produced by `Signer` is always
     /// well-formed and therefore calling this method on such values does not
     /// panic.)
     pub fn to_header_field(&self) -> HeaderField {
@@ -497,7 +498,7 @@ struct SignerTask<T> {
 ///
 /// let request = SignRequest::new(domain, selector, algorithm, signing_key);
 /// # let mut request = request;
-/// # request.timestamp = Some(viadkim::signer::Timestamp::Exact(1687435395));
+/// # request.timestamp = viadkim::signer::Timestamp::Exact(1687435395);
 ///
 /// let mut signer = Signer::prepare_signing(header, [request])?;
 ///
@@ -611,7 +612,7 @@ where
     /// Performs the actual signing and returns the resulting signatures.
     ///
     /// The returned result vector is never empty.
-    pub async fn sign(self) -> Vec<Result<SigningResult, SigningError>> {
+    pub async fn sign(self) -> Vec<Result<SigningOutput, SigningError>> {
         let hasher_results = self.body_hasher.finish();
 
         let mut result = vec![];

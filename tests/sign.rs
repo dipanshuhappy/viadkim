@@ -27,7 +27,7 @@ async fn basic_sign() {
     );
 
     request.canonicalization = (Relaxed, Relaxed).into();
-    request.timestamp = Some(Timestamp::Exact(1686737001));
+    request.timestamp = Timestamp::Exact(1686737001);
     request.valid_duration = None;
     request.format.header_name = "DKiM-Signature".into();
     request.format.line_width = 64.try_into().unwrap();

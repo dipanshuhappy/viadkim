@@ -208,6 +208,17 @@ impl SigningKey {
         }
     }
 
+    /// Returns the length in bytes of signatures produced with this key.
+    pub fn signature_length(&self) -> usize {
+        match self {
+            Self::Rsa(k) => {
+                use ::rsa::traits::PublicKeyParts;
+                k.size()
+            }
+            Self::Ed25519(_) => ::ed25519_dalek::SIGNATURE_LENGTH,
+        }
+    }
+
     /// Deserialises a signing key from the PKCS#8 PEM private key info in the
     /// given string.
     pub fn from_pkcs8_pem(s: &str) -> Result<Self, DecodeSigningKeyError> {
@@ -228,17 +239,6 @@ impl SigningKey {
             Ok(Self::Ed25519(k))
         } else {
             Err(DecodeSigningKeyError::UnsupportedKeyType)
-        }
-    }
-
-    /// Returns the length in bytes of signatures produced with this key.
-    pub fn signature_length(&self) -> usize {
-        match self {
-            Self::Rsa(k) => {
-                use ::rsa::traits::PublicKeyParts;
-                k.size()
-            }
-            Self::Ed25519(_) => ::ed25519_dalek::SIGNATURE_LENGTH,
         }
     }
 }
@@ -269,7 +269,23 @@ impl VerifyingKey {
         }
     }
 
-    pub fn from_key_data(key_type: KeyType, key_data: &[u8]) -> Result<Self, VerificationError> {
+    /// Validates this key’s minimum required size, if any.
+    pub fn validate_min_key_size(&self) -> Result<(), VerificationError> {
+        match (self, self.key_size()) {
+            (Self::Rsa(_), Some(n)) if n < self::rsa::MIN_KEY_BITS => {
+                return Err(VerificationError::InsufficientKeySize);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Constructs a verifying key from key data found in a DKIM public key
+    /// record.
+    pub fn from_key_data(
+        key_type: KeyType,
+        key_data: &[u8],
+    ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
         match key_type {
             KeyType::Rsa => {
                 let public_key = read_rsa_public_key(key_data)?;
@@ -283,6 +299,7 @@ impl VerifyingKey {
     }
 }
 
+/// An error that occurs when producing a cryptographic signature.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SigningError {
     SigningFailure,
@@ -298,6 +315,7 @@ impl Display for SigningError {
 
 impl Error for SigningError {}
 
+/// An error that occurs when verifying a cryptographic signature.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum VerificationError {
     InvalidKey,

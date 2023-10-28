@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::crypto::{HashAlgorithm, SigningError, VerificationError};
+use crate::crypto::HashAlgorithm;
 use rsa::{
     pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts, Pkcs1v15Sign,
     RsaPrivateKey, RsaPublicKey,
@@ -24,8 +24,26 @@ use sha1::Sha1;
 use sha2::Sha256;
 use std::error::Error;
 
-pub fn get_public_key_size(k: &RsaPublicKey) -> usize {
-    k.size() * 8
+/// Signs a message byte slice with an RSA signature.
+///
+/// # Errors
+///
+/// Failure to sign produces an error provided by the underlying library. It is
+/// returned as a boxed `Error`. If instead a
+/// [`SigningError`][crate::crypto::SigningError] is desired, the variant
+/// `SigningError::SigningFailure` should be used.
+pub fn sign_rsa(
+    hash_alg: HashAlgorithm,
+    private_key: &RsaPrivateKey,
+    msg: &[u8],
+) -> Result<Vec<u8>, Box<dyn Error + Send + Sync + 'static>> {
+    let result = match hash_alg {
+        HashAlgorithm::Sha256 => private_key.sign(Pkcs1v15Sign::new::<Sha256>(), msg)?,
+        #[cfg(feature = "pre-rfc8301")]
+        HashAlgorithm::Sha1 => private_key.sign(Pkcs1v15Sign::new::<Sha1>(), msg)?,
+    };
+
+    Ok(result)
 }
 
 // Note that openssl can read key data even if followed by excess content. We
@@ -33,33 +51,43 @@ pub fn get_public_key_size(k: &RsaPublicKey) -> usize {
 // (openssl would just use the first key). The rsa crate is more strict and does
 // not accept such keys.
 
-/// Reads an RSA public key from the given slice of bytes for verification.
-pub fn read_rsa_public_key(key_data: &[u8]) -> Result<RsaPublicKey, VerificationError> {
+/// Reads an RSA public key from the given slice of bytes.
+///
+/// # Errors
+///
+/// Failure to read the key produces an error provided by the underlying
+/// library. It is returned as a boxed `Error`. If instead a
+/// [`VerificationError`][crate::crypto::VerificationError] is desired, the
+/// variant `VerificationError::InvalidKey` should be used.
+pub fn read_rsa_public_key(
+    key_data: &[u8],
+) -> Result<RsaPublicKey, Box<dyn Error + Send + Sync + 'static>> {
     // First try reading the bytes as *SubjectPublicKeyInfo* format
     // (the de facto procedure, as shown in examples in appendix C of RFC 6376).
     // Then try reading the bytes as *RSAPublicKey* format
     // (what was actually specified in RFC 6376).
     // See the module comment in `viadkim::crypto`.
 
-    let public_key = RsaPublicKey::from_public_key_der(key_data)
-        .or_else(|_| RsaPublicKey::from_pkcs1_der(key_data))
-        .map_err(|_| VerificationError::InvalidKey)?;
+    let key = RsaPublicKey::from_public_key_der(key_data).or_else(|e| {
+        // Supply initial error if fallback fails, too.
+        RsaPublicKey::from_pkcs1_der(key_data).map_err(|_| e)
+    })?;
 
-    let min_key_size = if cfg!(feature = "pre-rfc8301") { 512 } else { 1024 };
+    Ok(key)
+}
 
-    if get_public_key_size(&public_key) < min_key_size {
-        return Err(VerificationError::InsufficientKeySize);
-    }
+pub const MIN_KEY_BITS: usize = if cfg!(feature = "pre-rfc8301") { 512 } else { 1024 };
 
-    Ok(public_key)
+pub fn get_public_key_size(k: &RsaPublicKey) -> usize {
+    k.size() * 8
 }
 
 /// Verifies an RSA signature for a given message byte slice.
 ///
 /// # Errors
 ///
-/// A failing verification will ultimately produce an error provided by the
-/// underlying library. It is returned as a boxed `dyn Error`. If instead a
+/// A failing verification produces an error provided by the underlying library.
+/// It is returned as a boxed `Error`. If instead a
 /// [`VerificationError`][crate::crypto::VerificationError] is desired, the
 /// variant `VerificationError::VerificationFailure` should be used.
 pub fn verify_rsa(
@@ -76,22 +104,9 @@ pub fn verify_rsa(
         HashAlgorithm::Sha1 => {
             public_key.verify(Pkcs1v15Sign::new::<Sha1>(), msg, signature_data)?;
         }
-    };
+    }
+
     Ok(())
-}
-
-pub fn sign_rsa(
-    hash_alg: HashAlgorithm,
-    private_key: &RsaPrivateKey,
-    msg: &[u8],
-) -> Result<Vec<u8>, SigningError> {
-    let result = match hash_alg {
-        HashAlgorithm::Sha256 => private_key.sign(Pkcs1v15Sign::new::<Sha256>(), msg),
-        #[cfg(feature = "pre-rfc8301")]
-        HashAlgorithm::Sha1 => private_key.sign(Pkcs1v15Sign::new::<Sha1>(), msg),
-    };
-
-    result.map_err(|_| SigningError::SigningFailure)
 }
 
 #[cfg(test)]

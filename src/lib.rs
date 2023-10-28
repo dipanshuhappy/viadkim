@@ -88,7 +88,7 @@ pub use crate::{
     crypto::SigningKey,
     header::{FieldBody, FieldName, HeaderField, HeaderFields},
     signature::{DomainName, Selector, SigningAlgorithm},
-    signer::{RequestError, SignRequest, Signer, SigningError, SigningResult},
+    signer::{RequestError, SignRequest, Signer, SigningError, SigningOutput},
     util::{decode_base64, encode_base64, Base64Error, CanonicalStr},
     verifier::{
         Config, DkimResult, VerificationError, VerificationResult, VerificationStatus, Verifier,

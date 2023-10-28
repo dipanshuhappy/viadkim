@@ -151,7 +151,7 @@ fn is_alphanum(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-pub fn is_tval_char(c: char) -> bool {
+fn is_tval_char(c: char) -> bool {
     // printable ASCII without ; plus any non-ASCII UTF-8
     matches!(c, '!'..=':' | '<'..='~') || !c.is_ascii()
 }

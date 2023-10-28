@@ -49,6 +49,6 @@ pub trait LookupTxt: Send + Sync {
     /// should be concatenated into a single byte vector.
     ///
     /// Note that according to RFC 6376, the final answer is expected to contain
-    /// only a single TXT record (but DNS allows > 1).
+    /// only a single TXT record, but DNS allows more than one.
     fn lookup_txt(&self, domain: &str) -> Self::Query<'_>;
 }

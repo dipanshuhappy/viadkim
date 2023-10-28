@@ -45,10 +45,10 @@ output data produced by those processes should enable a wide range of DKIM usage
 patterns.
 
 Finally, care is taken to strictly **conform to RFC 6376**, including RFC
-updates and known errata. Support for internationalised email was already
-mentioned, but also, for example, more recent recommendations for supported
-signature algorithms such as addition of *ed25519-sha256* and retirement of
-*rsa-sha1* are adopted.
+updates and errata. Support for internationalised email was already mentioned,
+but also, for example, more recent recommendations for supported signature
+algorithms such as addition of *ed25519-sha256* and retirement of *rsa-sha1* are
+adopted.
 
 ## Usage
 
@@ -106,9 +106,9 @@ Edit these examples to experiment with various configuration options.
 
 While this is an independent implementation of DKIM that was created from
 scratch, the author wishes to give credit to the [OpenDKIM] project. As a
-long-time user of OpenDKIM, some design choices made here were inspired by it.
-For example, the ‘staged’ design, which does not require that the whole message
-reside in memory at once, is inspired from OpenDKIM.
+long-time user of OpenDKIM, the author couldn’t help adopting some of its design
+ideas. One example is the ‘staged’ processing approach, which does not require
+that the whole message reside in memory at once.
 
 [OpenDKIM]: http://opendkim.org
 

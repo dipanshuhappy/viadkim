@@ -14,25 +14,42 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::crypto::{SigningError, VerificationError};
 use ed25519_dalek::{
     pkcs8::DecodePublicKey, Signature, Signer, SigningKey, Verifier, VerifyingKey,
 };
 use std::error::Error;
 
-/// Reads an Ed25519 public key from the given slice of bytes for verification.
-pub fn read_ed25519_verifying_key(key_data: &[u8]) -> Result<VerifyingKey, VerificationError> {
-    VerifyingKey::try_from(key_data)
-        .or_else(|_| VerifyingKey::from_public_key_der(key_data))
-        .map_err(|_| VerificationError::InvalidKey)
+/// Signs a message byte slice with an Ed25519 signature.
+pub fn sign_ed25519(signing_key: &SigningKey, msg: &[u8]) -> Vec<u8> {
+    let signature = signing_key.sign(msg);
+
+    signature.to_bytes().to_vec()
+}
+
+/// Reads an Ed25519 public key from the given slice of bytes.
+///
+/// # Errors
+///
+/// Failure to read the key produces an error provided by the underlying
+/// library. It is returned as a boxed `Error`. If instead a
+/// [`VerificationError`][crate::crypto::VerificationError] is desired, the
+/// variant `VerificationError::InvalidKey` should be used.
+pub fn read_ed25519_verifying_key(
+    key_data: &[u8],
+) -> Result<VerifyingKey, Box<dyn Error + Send + Sync + 'static>> {
+    let key = VerifyingKey::try_from(key_data).or_else(|e| {
+        // Supply initial error if fallback fails, too.
+        VerifyingKey::from_public_key_der(key_data).map_err(|_| e)
+    })?;
+    Ok(key)
 }
 
 /// Verifies an Ed25519 signature for a given message byte slice.
 ///
 /// # Errors
 ///
-/// A failing verification will ultimately produce an error provided by the
-/// underlying library. It is returned as a boxed `dyn Error`. If instead a
+/// A failing verification produces an error provided by the underlying library.
+/// It is returned as a boxed `Error`. If instead a
 /// [`VerificationError`][crate::crypto::VerificationError] is desired, the
 /// variant `VerificationError::VerificationFailure` should be used.
 pub fn verify_ed25519(
@@ -45,11 +62,6 @@ pub fn verify_ed25519(
     verifying_key.verify(msg, &signature)?;
 
     Ok(())
-}
-
-pub fn sign_ed25519(signing_key: &SigningKey, msg: &[u8]) -> Result<Vec<u8>, SigningError> {
-    let signature = signing_key.sign(msg);
-    Ok(signature.to_bytes().to_vec())
 }
 
 #[cfg(test)]

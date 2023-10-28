@@ -29,11 +29,7 @@ use std::{
     str::{self, FromStr},
 };
 
-// Implementation note: domain name, selector, and identity types only do very
-// broad validation. More or less everything that can appear in a tag-list value
-// is allowed (even when the conservative RFC 5321 disagrees).
-//
-// Also note that according to RFC 6376, bare TLDs are not allowed (see ABNF for
+// Design note: According to RFC 6376, bare TLDs are not allowed (see ABNF for
 // d= tag). But elsewhere it does seem to assume possibility of such domains,
 // see §6.1.1: ‘signatures with "d=" values such as "com" and "co.uk" could be
 // ignored.’ (See also RFC 5321, section 2.3.5: ‘A domain name […] consists of
@@ -252,11 +248,10 @@ fn is_valid_dns_name(s: &str, check_tld: bool) -> bool {
 
     let mut labels = s.split('.').rev();
 
-    let final_label = match labels.next() {
-        Some(label) => label,
-        None => return false,
-    };
+    let final_label = labels.next().expect("failed to split string");
 
+    // RFC 3696, section 2: ‘There is an additional rule that essentially
+    // requires that top-level domain names not be all-numeric.’
     if !is_label(final_label) || (check_tld && final_label.chars().all(|c| c.is_ascii_digit())) {
         return false;
     }
@@ -264,15 +259,15 @@ fn is_valid_dns_name(s: &str, check_tld: bool) -> bool {
     labels.all(is_label)
 }
 
-// Use a very lenient definition of ‘DNS label’: Everything that can appear in a
-// tag-list value may be part of a label (printable ASCII except `;` [and `.`
-// and `\`], and valid UTF-8).
+// Use a somewhat relaxed definition of DNS labels that also allows underscores,
+// as seen in the wild.
 fn is_label(s: &str) -> bool {
     debug_assert!(!s.contains('.'));
     has_valid_label_len(s)
         && !s.starts_with('-')
         && !s.ends_with('-')
-        && s.chars().all(|c| tag_list::is_tval_char(c) && c != '\\')
+        && s.chars()
+            .all(|c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
 // Note that these length checks are not definitive, as a later concatenation of
@@ -315,15 +310,7 @@ pub struct Identity {
 impl Identity {
     /// Creates a new agent or user identifier from the given string.
     pub fn new(s: &str) -> Result<Self, ParseIdentityError> {
-        // An oddity: Our `DomainName` type allows about every character that is
-        // syntactically legal in a DKIM signature, including `@`. For
-        // consistency, if you can manually create an identity `@@example.com`,
-        // it should also be possible to parse such a thing. Thus we split not
-        // on the first @ looking from the right, but on the first of a sequence
-        // of @’s – however unlikely that may be.
-        let mut i = s.rfind('@').ok_or(ParseIdentityError)?;
-        i -= s[..i].bytes().rev().take_while(|b| *b == b'@').count();
-        let (local_part, domain) = (&s[..i], &s[i + 1..]);
+        let (local_part, domain) = s.rsplit_once('@').ok_or(ParseIdentityError)?;
 
         let local_part = if local_part.is_empty() {
             None
@@ -976,7 +963,7 @@ impl DkimSignature {
                     // text, the ABNF then allows qp-hdr-value (or rather
                     // ‘dkim-quoted-printable with colon encoded’, see erratum
                     // 4810). We skip this by simply checking for presence of
-                    // `dns/txt`, generally the only sensible value.
+                    // `dns/txt`, the only generally supported value.
 
                     let mut dns_txt_seen = false;
 
@@ -1125,21 +1112,24 @@ mod tests {
     #[test]
     fn domain_name_ok() {
         assert!(DomainName::new("com").is_ok());
-        assert!(DomainName::new("c,m").is_ok());
+        assert!(DomainName::new("com123").is_ok());
         assert!(DomainName::new("example.com").is_ok());
         assert!(DomainName::new("_abc.example.com").is_ok());
-        assert!(DomainName::new("_$@.example.com").is_ok());
         assert!(DomainName::new("中国").is_ok());
         assert!(DomainName::new("example.中国").is_ok());
         assert!(DomainName::new("☕.example.中国").is_ok());
         assert!(DomainName::new("xn--53h.example.xn--fiqs8s").is_ok());
 
+        assert!(DomainName::new("").is_err());
         assert!(DomainName::new("-com").is_err());
+        assert!(DomainName::new("c,m").is_err());
         assert!(DomainName::new("c;m").is_err());
         assert!(DomainName::new("123").is_err());
         assert!(DomainName::new("com.").is_err());
+        assert!(DomainName::new("example..com").is_err());
         assert!(DomainName::new("example-.com").is_err());
         assert!(DomainName::new("example.123").is_err());
+        assert!(DomainName::new("_$@.example.com").is_err());
         assert!(DomainName::new("example.com.").is_err());
         assert!(DomainName::new("ex mple.com").is_err());
         assert!(DomainName::new("xn---y.example.com").is_err());
@@ -1168,7 +1158,6 @@ mod tests {
         assert!(Selector::new("x☕y").is_ok());
         assert!(Selector::new("_x☕y").is_ok());
         assert!(Selector::new("123").is_ok());
-
         assert!(Selector::new("☕.example").is_ok());
         assert!(Selector::new("_☕.example").is_ok());
         assert!(Selector::new("xn--53h.example").is_ok());
@@ -1184,9 +1173,8 @@ mod tests {
     fn identity_ok() {
         assert!(Identity::new("我@☕.example.中国").is_ok());
         assert!(Identity::new("\"我\"@☕.example.中国").is_ok());
-        assert!(Identity::new("me@@☕.example.中国").is_ok());
 
-        assert!(Identity::new("me<@☕.example.中国").is_err());
+        assert!(Identity::new("me@@☕.example.中国").is_err());
     }
 
     #[test]

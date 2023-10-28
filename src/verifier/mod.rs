@@ -56,7 +56,7 @@ pub struct Config {
     pub lookup_timeout: Duration,
 
     /// Only validate at most this number of signatures, any extra signatures
-    /// are ignored.
+    /// are ignored. Signatures are selected starting at the top of the header.
     ///
     /// The default is 10.
     pub max_signatures: usize,
@@ -396,11 +396,11 @@ impl Error for VerificationError {
     }
 }
 
-/// An [RFC 8601] DKIM result.
+/// An RFC 8601 DKIM result.
 ///
 /// The mapping of an RFC 6376 *SUCCESS*, *PERMFAIL*, or *TEMPFAIL* result to an
-/// RFC 8601 DKIM result is not well defined. Our interpretation of each result
-/// is given in detail below.
+/// [RFC 8601] DKIM result is not well defined. Our interpretation of each
+/// result is given in detail below.
 ///
 /// As a general rule, of the error results `Neutral` is the early bail-out
 /// error result, which signals that verification didn’t proceed past a basic

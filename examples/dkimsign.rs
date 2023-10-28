@@ -6,7 +6,7 @@ use tokio::{
 use viadkim::{
     crypto::{HashAlgorithm, SigningKey},
     signature::{DomainName, Selector, SigningAlgorithm},
-    signer::{SignRequest, Signer, SigningResult},
+    signer::{SignRequest, Signer, SigningOutput},
 };
 
 #[tokio::main]
@@ -67,8 +67,8 @@ async fn main() {
 
     for (_i, result) in sigs.into_iter().enumerate() {
         match result {
-            Ok(result) => {
-                let SigningResult { header_name, header_value, .. } = result;
+            Ok(output) => {
+                let SigningOutput { header_name, header_value, .. } = output;
                 let header_value = header_value.replace("\r\n", "\n");
                 println!("{header_name}:{header_value}");
             }

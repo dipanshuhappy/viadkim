@@ -21,7 +21,7 @@ use crate::{
     signer::{
         self,
         format::{self, UnsignedDkimSignature},
-        BodyLength, HeaderSelection, OutputFormat, SignRequest, SigningError, SigningResult,
+        BodyLength, HeaderSelection, OutputFormat, SignRequest, SigningError, SigningOutput,
         Timestamp,
     },
 };
@@ -32,7 +32,7 @@ pub async fn perform_signing<T>(
     request: SignRequest<T>,
     headers: &HeaderFields,
     hasher_results: &BodyHashResults,
-) -> Result<SigningResult, SigningError>
+) -> Result<SigningOutput, SigningError>
 where
     T: AsRef<SigningKey>,
 {
@@ -90,10 +90,11 @@ where
 
     // calculate timestamp and expiration
 
-    let timestamp = request.timestamp.map(|timestamp| match timestamp {
-        Timestamp::Now => now_unix_secs(),
-        Timestamp::Exact(t) => t,
-    });
+    let timestamp = match request.timestamp {
+        Timestamp::None => None,
+        Timestamp::Now => Some(now_unix_secs()),
+        Timestamp::Exact(t) => Some(t),
+    };
 
     let expiration = request.valid_duration.map(|duration| {
         timestamp.unwrap_or_else(now_unix_secs)
@@ -148,7 +149,7 @@ async fn produce_signature(
     signing_key: &SigningKey,
     format: &OutputFormat,
     headers: &HeaderFields,
-) -> Result<SigningResult, SigningError> {
+) -> Result<SigningOutput, SigningError> {
     let b_len = estimate_b_tag_length(signing_key);
 
     let (mut formatted_header_value, insertion_index) = sig.format_without_signature(format, b_len);
@@ -186,7 +187,7 @@ async fn produce_signature(
         &format.indentation,
     );
 
-    Ok(SigningResult {
+    Ok(SigningOutput {
         header_name: header_name.into(),
         header_value: formatted_header_value,
         signature: sig,
@@ -235,15 +236,11 @@ async fn sign_hash(
                 Err(SigningError::SigningFailure)
             }
         },
-        SigningKey::Ed25519(k) => match crypto::sign_ed25519(k, data_hash) {
-            Ok(s) => {
-                trace!("Ed25519 signing successful");
-                Ok(s)
-            }
-            Err(e) => {
-                trace!("Ed25519 signing failed: {e}");
-                Err(SigningError::SigningFailure)
-            }
-        },
+        SigningKey::Ed25519(k) => {
+            // At this point, Ed25519 signing cannot fail.
+            let s = crypto::sign_ed25519(k, data_hash);
+            trace!("Ed25519 signing successful");
+            Ok(s)
+        }
     }
 }
