@@ -209,33 +209,39 @@ fn format_tag_v(out: &mut String, i: &mut usize, fmt: Fmt<'_>) {
 }
 
 fn format_tag_d(out: &mut String, i: &mut usize, fmt: Fmt<'_>, domain: &DomainName) {
-    let domain = if fmt.ascii {
+    let xdomain = if fmt.ascii {
         domain.to_ascii()
     } else {
         domain.to_unicode()
     };
 
-    format_tag(out, i, fmt, "d", &domain);
+    let domain = select_str_form(domain, &xdomain);
+
+    format_tag(out, i, fmt, "d", domain);
 }
 
 fn format_tag_s(out: &mut String, i: &mut usize, fmt: Fmt<'_>, selector: &Selector) {
-    let selector = if fmt.ascii {
+    let xselector = if fmt.ascii {
         selector.to_ascii()
     } else {
         selector.to_unicode()
     };
 
-    format_tag(out, i, fmt, "s", &selector);
+    let selector = select_str_form(selector, &xselector);
+
+    format_tag(out, i, fmt, "s", selector);
 }
 
 fn format_tag_i(out: &mut String, i: &mut usize, fmt: Fmt<'_>, identity: &Identity) {
     let Identity { local_part, domain } = identity;
 
-    let d = if fmt.ascii {
+    let xdomain = if fmt.ascii {
         domain.to_ascii()
     } else {
         domain.to_unicode()
     };
+
+    let d = select_str_form(domain, &xdomain);
 
     let identity = match local_part {
         Some(l) => {
@@ -251,6 +257,16 @@ fn format_tag_i(out: &mut String, i: &mut usize, fmt: Fmt<'_>, identity: &Identi
     };
 
     format_tag(out, i, fmt, "i", &identity);
+}
+
+// Pick transformed (A-form or U-form) string only if it was changed further
+// than trivial ASCII-case differences.
+fn select_str_form<'a>(orig: &'a impl AsRef<str>, xformed: &'a str) -> &'a str {
+    if orig.as_ref().eq_ignore_ascii_case(xformed) {
+        orig.as_ref()
+    } else {
+        xformed
+    }
 }
 
 fn format_tag_a(out: &mut String, i: &mut usize, fmt: Fmt<'_>, algorithm: SigningAlgorithm) {
