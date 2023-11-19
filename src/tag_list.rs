@@ -29,12 +29,12 @@ use std::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum TagListParseError {
+pub enum ParseTagListError {
     DuplicateTag,
     Syntax,
 }
 
-impl Display for TagListParseError {
+impl Display for ParseTagListError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateTag => write!(f, "duplicate tag"),
@@ -43,7 +43,7 @@ impl Display for TagListParseError {
     }
 }
 
-impl Error for TagListParseError {}
+impl Error for ParseTagListError {}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TagSpec<'a> {
@@ -62,16 +62,16 @@ impl<'a> AsRef<[TagSpec<'a>]> for TagList<'a> {
 }
 
 impl<'a> TagList<'a> {
-    pub fn from_str(s: &'a str) -> Result<Self, TagListParseError> {
+    pub fn from_str(s: &'a str) -> Result<Self, ParseTagListError> {
         match strip_tag_list(s) {
             Some((rest, tag_list)) if rest.is_empty() => {
                 let mut names_seen = HashSet::new();
                 if tag_list.iter().any(|tag| !names_seen.insert(tag.name)) {
-                    return Err(TagListParseError::DuplicateTag);
+                    return Err(ParseTagListError::DuplicateTag);
                 }
                 Ok(Self(tag_list))
             }
-            _ => Err(TagListParseError::Syntax),
+            _ => Err(ParseTagListError::Syntax),
         }
     }
 }
@@ -162,7 +162,7 @@ pub fn parse_colon_separated_value(value: &str) -> Vec<&str> {
     value.split(':').map(trim_surrounding_fws).collect()
 }
 
-pub fn parse_base64_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
+pub fn parse_base64_value(value: &str) -> Result<Vec<u8>, ParseTagListError> {
     debug_assert!(is_tag_value(value));
 
     // A tag value contains only well-formed FWS, so may strip indiscriminately:
@@ -171,24 +171,24 @@ pub fn parse_base64_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
         .filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
         .collect();
 
-    util::decode_base64(&value).map_err(|_| TagListParseError::Syntax)
+    util::decode_base64(&value).map_err(|_| ParseTagListError::Syntax)
 }
 
-pub fn parse_qp_section_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
+pub fn parse_qp_section_value(value: &str) -> Result<Vec<u8>, ParseTagListError> {
     debug_assert!(is_tag_value(value));
 
-    quoted_printable::decode_qp_section(value).map_err(|_| TagListParseError::Syntax)
+    quoted_printable::decode_qp_section(value).map_err(|_| ParseTagListError::Syntax)
 }
 
-pub fn parse_quoted_printable_value(value: &str) -> Result<Vec<u8>, TagListParseError> {
+pub fn parse_quoted_printable_value(value: &str) -> Result<Vec<u8>, ParseTagListError> {
     debug_assert!(is_tag_value(value));
 
-    quoted_printable::decode(value).map_err(|_| TagListParseError::Syntax)
+    quoted_printable::decode(value).map_err(|_| ParseTagListError::Syntax)
 }
 
 pub fn parse_quoted_printable_header_field(
     value: &str,
-) -> Result<(FieldName, Box<[u8]>), TagListParseError> {
+) -> Result<(FieldName, Box<[u8]>), ParseTagListError> {
     // Unlike other functions here, value may be surrounded with FWS.
     debug_assert!(is_tag_value(trim_surrounding_fws(value)));
 
@@ -196,18 +196,18 @@ pub fn parse_quoted_printable_header_field(
     // for the qp-encoded value, which can be anything (it should of course
     // conform to `FieldBody`, but since it is foreign data we cannot assume).
 
-    let val = quoted_printable::decode(value).map_err(|_| TagListParseError::Syntax)?;
+    let val = quoted_printable::decode(value).map_err(|_| ParseTagListError::Syntax)?;
 
     let mut iter = val.splitn(2, |&c| c == b':');
 
     match (iter.next(), iter.next()) {
         (Some(name), Some(value)) => {
-            let name = str::from_utf8(name).map_err(|_| TagListParseError::Syntax)?;
-            let name = FieldName::new(name).map_err(|_| TagListParseError::Syntax)?;
+            let name = str::from_utf8(name).map_err(|_| ParseTagListError::Syntax)?;
+            let name = FieldName::new(name).map_err(|_| ParseTagListError::Syntax)?;
             let value = value.into();
             Ok((name, value))
         }
-        _ => Err(TagListParseError::Syntax),
+        _ => Err(ParseTagListError::Syntax),
     }
 }
 

@@ -26,12 +26,18 @@ async fn main() {
     let (header, body) = msg.split_once("\r\n\r\n").unwrap();
 
     let headers = header.parse().unwrap();
-    // dbg!(&headers);
 
     let resolver = TokioAsyncResolver::tokio(Default::default(), Default::default());
 
     let config = Config {
         allow_expired: true,
+        allow_timestamp_in_future: true,
+        //
+        // Experiment with the various configuration options here.
+        //
+        // max_signatures: 5,
+        // allow_sha1: true,
+        // min_key_bits: 512,
         ..Default::default()
     };
 

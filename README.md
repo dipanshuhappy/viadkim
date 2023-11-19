@@ -1,13 +1,5 @@
 # viadkim
 
-🚧
-
-***in development***
-
-*status: complete – being refined, awaiting initial release*
-
-🏗
-
 The **viadkim** library contains a complete implementation of *DomainKeys
 Identified Mail* (DKIM). DKIM is specified in [RFC 6376].
 

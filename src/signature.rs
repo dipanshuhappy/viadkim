@@ -39,6 +39,7 @@ use std::{
 
 // Note: some of this is copied from viaspf.
 
+/// An error indicating that a domain name could not be parsed.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ParseDomainError;
 
@@ -281,6 +282,7 @@ fn has_valid_label_len(s: &str) -> bool {
     matches!(s.len(), 1..=63)
 }
 
+/// An error indicating that an identity could not be parsed.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ParseIdentityError;
 
@@ -435,6 +437,7 @@ fn is_dot_string(s: &str) -> bool {
     !dot
 }
 
+/// An error indicating that an algorithm name could not be parsed.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ParseAlgorithmError;
 
@@ -700,6 +703,7 @@ impl Display for DkimSignatureError {
 
 impl Error for DkimSignatureError {}
 
+/// The type of the error caused by an invalid DKIM signature.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DkimSignatureErrorKind {
     Utf8Encoding,
@@ -1263,8 +1267,7 @@ mod tests {
     }
 
     #[test]
-    fn complicated_example_signature() {
-        // TODO revisit example
+    fn complicated_i18n_example_signature() {
         let example = " v = 1 ; a=rsa-sha256;d=example.net; s=brisbane;
    c=simple; q=dns/txt; i=中文=40en
     g.example =2E net;

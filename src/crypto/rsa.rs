@@ -112,40 +112,12 @@ pub fn verify_rsa(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util;
     use rsa::pkcs8::DecodePrivateKey;
 
-    /*
-    #[test]
-    fn make_rsa2048_key() {
-        use rsa::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
-
-        let mut rng = rand::thread_rng();
-
-        let bits = 2048;
-        let private_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
-        let public_key = RsaPublicKey::from(&private_key);
-
-        let s = public_key.to_public_key_pem(Default::default()).unwrap();
-        //dbg!("pub: {s}");
-
-        let s = private_key.to_pkcs8_pem(Default::default()).unwrap();
-        let s: &str = s.as_ref();
-        //dbg!("sec: {s}");
-    }
-    */
-
-    #[test]
-    fn read_rsa2048_key() {
-        let pubkey_s = "-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvXEn6j24wx68Zs5djoKQ
-LFXcGUUPzvAAfrc9RKzBQG+dglfdCqZy2ZFai4SlLivvkkCU+0wXl+ExSSY5xEiQ
-k7m3YQZbeIAeSWUTLe7asTri73c7nX5D7+1KKWUarMHKLeWN5F9Re8uOfWrgZdYC
-20bfoptbMQLLPcbfchP9Z7epZRwdi6xeZySFO2JnwyK2kEay7VpF7YivwQzMohF2
-hlQ9OshDIa2w7uudKp5jAcOVymPTi3iu6tEI/3NNkcezukVawN6bLkZf6IEE3Gap
-2oD3pidf51iAfb7BBbeE36Hl3dPxAgfsSrc/v2HTRMYeeBb7fjFC50ImvxjtmFUI
-xQIDAQAB
------END PUBLIC KEY-----";
-        let privkey_s = "-----BEGIN PRIVATE KEY-----
+    // Output of:
+    // openssl genpkey -algorithm RSA -out key.pem
+    const PRIVKEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC9cSfqPbjDHrxm
 zl2OgpAsVdwZRQ/O8AB+tz1ErMFAb52CV90KpnLZkVqLhKUuK++SQJT7TBeX4TFJ
 JjnESJCTubdhBlt4gB5JZRMt7tqxOuLvdzudfkPv7UopZRqswcot5Y3kX1F7y459
@@ -174,18 +146,47 @@ bjrBykE/N9Fi2FVYbKF2pevzTeMj4J6YirkG998T0IcuNfJdH7o57z+AJC7zIuzj
 CQ8od0/ltBQAeX9B2QXumw==
 -----END PRIVATE KEY-----";
 
-        let privkey = RsaPrivateKey::from_pkcs8_pem(privkey_s).unwrap();
-        let pubkey = RsaPublicKey::from_public_key_pem(pubkey_s).unwrap();
+    #[test]
+    fn read_rsa_public_key_spki() {
+        let privkey = RsaPrivateKey::from_pkcs8_pem(PRIVKEY_PEM).unwrap();
+
+        // Output of:
+        // openssl pkey -in key.pem -pubout -outform DER | openssl base64 -A
+        let pubkey_der64 = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvXEn6j24wx68Zs5djoKQ\
+LFXcGUUPzvAAfrc9RKzBQG+dglfdCqZy2ZFai4SlLivvkkCU+0wXl+ExSSY5xEiQ\
+k7m3YQZbeIAeSWUTLe7asTri73c7nX5D7+1KKWUarMHKLeWN5F9Re8uOfWrgZdYC\
+20bfoptbMQLLPcbfchP9Z7epZRwdi6xeZySFO2JnwyK2kEay7VpF7YivwQzMohF2\
+hlQ9OshDIa2w7uudKp5jAcOVymPTi3iu6tEI/3NNkcezukVawN6bLkZf6IEE3Gap\
+2oD3pidf51iAfb7BBbeE36Hl3dPxAgfsSrc/v2HTRMYeeBb7fjFC50ImvxjtmFUI\
+xQIDAQAB";
+
+        let pubkey_bytes = util::decode_base64(pubkey_der64).unwrap();
+
+        let pubkey = read_rsa_public_key(&pubkey_bytes).unwrap();
 
         assert_eq!(get_public_key_size(&pubkey), 2048);
+        assert_eq!(pubkey, RsaPublicKey::from(privkey));
+    }
 
-        let privkey2 = crate::crypto::SigningKey::from_pkcs8_pem(privkey_s).unwrap();
+    #[test]
+    fn read_rsa_public_key_rsa() {
+        let privkey = RsaPrivateKey::from_pkcs8_pem(PRIVKEY_PEM).unwrap();
 
-        match privkey2 {
-            crate::crypto::SigningKey::Rsa(privkey2) => {
-                assert_eq!(privkey, privkey2);
-            }
-            _ => panic!(),
-        }
+        // Output of:
+        // openssl pkey -in key.pem -pubout -out pubkey.pem
+        // openssl rsa -pubin -in pubkey.pem -RSAPublicKey_out -outform DER | openssl base64 -A
+        let pubkey_der64 = "MIIBCgKCAQEAvXEn6j24wx68Zs5djoKQLFXcGUUPzvAAfrc9RKzBQG+dglfdCqZy\
+2ZFai4SlLivvkkCU+0wXl+ExSSY5xEiQk7m3YQZbeIAeSWUTLe7asTri73c7nX5D\
+7+1KKWUarMHKLeWN5F9Re8uOfWrgZdYC20bfoptbMQLLPcbfchP9Z7epZRwdi6xe\
+ZySFO2JnwyK2kEay7VpF7YivwQzMohF2hlQ9OshDIa2w7uudKp5jAcOVymPTi3iu\
+6tEI/3NNkcezukVawN6bLkZf6IEE3Gap2oD3pidf51iAfb7BBbeE36Hl3dPxAgfs\
+Src/v2HTRMYeeBb7fjFC50ImvxjtmFUIxQIDAQAB";
+
+        let pubkey_bytes = util::decode_base64(pubkey_der64).unwrap();
+
+        let pubkey = read_rsa_public_key(&pubkey_bytes).unwrap();
+
+        assert_eq!(get_public_key_size(&pubkey), 2048);
+        assert_eq!(pubkey, RsaPublicKey::from(privkey));
     }
 }

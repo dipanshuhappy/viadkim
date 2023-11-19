@@ -36,6 +36,7 @@ pub fn digest(alg: HashAlgorithm, bytes: impl AsRef<[u8]>) -> Box<[u8]> {
     }
 }
 
+/// An error indicating that a hasher expected more input than it was fed.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct InsufficientInput;
 
@@ -73,6 +74,8 @@ impl CountingHasher {
     pub fn update(&mut self, bytes: &[u8]) -> HashStatus {
         match self.length {
             Some(len) => {
+                assert!(len >= self.bytes_written);
+
                 let bytes_left_to_write = len - self.bytes_written;
 
                 if bytes_left_to_write >= bytes.len() {

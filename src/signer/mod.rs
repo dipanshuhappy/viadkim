@@ -285,7 +285,6 @@ pub struct SignRequest<T> {
     pub format: OutputFormat,
 }
 
-// TODO consider a builder instead
 impl<T> SignRequest<T> {
     pub fn new(
         domain: DomainName,
@@ -613,7 +612,7 @@ where
     ///
     /// The returned result vector is never empty.
     pub async fn sign(self) -> Vec<Result<SigningOutput, SigningError>> {
-        let hasher_results = self.body_hasher.finish();
+        let body_hash_results = self.body_hasher.finish();
 
         let mut result = vec![];
 
@@ -621,7 +620,7 @@ where
             let request = task.request;
 
             let signing_result =
-                sign::perform_signing(request, &self.headers, &hasher_results).await;
+                sign::perform_signing(request, &self.headers, &body_hash_results).await;
 
             result.push(signing_result);
         }

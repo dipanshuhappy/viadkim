@@ -65,7 +65,7 @@ async fn low_level_sign() {
 
     // sign data hash
 
-    let signing_key = common::read_signing_key_from_file("tests/keys/rsa2048.pem")
+    let signing_key = common::read_signing_key("tests/keys/rsa2048.pem")
         .await
         .unwrap();
     let signature = match &signing_key {
@@ -87,7 +87,7 @@ async fn low_level_sign() {
         headers,
     );
 
-    // afterwards verify with high-level Verifier to see if works
+    // afterwards verify with high-level Verifier to see if it works
 
     let resolver = MockLookup::new(|name| {
         Box::pin(async move {
@@ -120,7 +120,7 @@ async fn low_level_verify() {
 
     // first sign message with high-level Signer
 
-    let signing_key = common::read_signing_key_from_file("tests/keys/rsa2048.pem")
+    let signing_key = common::read_signing_key("tests/keys/rsa2048.pem")
         .await
         .unwrap();
     let mut req = SignRequest::new(

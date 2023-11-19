@@ -31,7 +31,7 @@ use tracing::trace;
 pub async fn perform_signing<T>(
     request: SignRequest<T>,
     headers: &HeaderFields,
-    hasher_results: &BodyHashResults,
+    body_hash_results: &BodyHashResults,
 ) -> Result<SigningOutput, SigningError>
 where
     T: AsRef<SigningKey>,
@@ -49,10 +49,10 @@ where
     let hash_alg = algorithm.hash_algorithm();
     let key = (body_length, hash_alg, canonicalization.body);
 
-    let hasher_result = hasher_results.get(&key)
+    let body_hash_result = body_hash_results.get(&key)
         .expect("requested body hash result not available");
 
-    let (body_hash, final_len) = match hasher_result {
+    let (body_hash, final_len) = match body_hash_result {
         Ok((h, final_len)) => (h.clone(), *final_len),
         Err(BodyHashError::InsufficientInput) => {
             trace!("not signing, got insufficient message body content");
@@ -65,15 +65,13 @@ where
 
     let body_length = match request.body_length {
         BodyLength::NoLimit => None,
-        BodyLength::MessageContent | BodyLength::Exact(_) => {
-            match final_len.try_into() {
-                Ok(n) => Some(n),
-                Err(_) => {
-                    trace!("not signing, message too large");
-                    return Err(SigningError::Overflow);
-                }
+        BodyLength::MessageContent | BodyLength::Exact(_) => match final_len.try_into() {
+            Ok(n) => Some(n),
+            Err(_) => {
+                trace!("not signing, message too large");
+                return Err(SigningError::Overflow);
             }
-        }
+        },
     };
 
     // select headers
@@ -176,7 +174,7 @@ async fn produce_signature(
 
     let sig = sig.into_signature(signature_data);
 
-    // insert signature into formatted dkim-sig header, store
+    // insert signature into formatted DKIM-Signature header, store
 
     format::insert_signature_data(
         &mut formatted_header_value,

@@ -127,6 +127,7 @@ fn compute_tag_names<'a>(
     names
 }
 
+// Ephemeral context holding current formatting options.
 #[derive(Clone, Copy)]
 struct Fmt<'a> {
     width: usize,
@@ -538,11 +539,10 @@ pub fn insert_signature_data(
 ) {
     debug_assert!(insertion_index <= formatted_header.len());
 
-    // TODO revisit Fmt struct
     let fmt = Fmt { width: line_width, indent, last: false /*notused*/, ascii: false /*notused*/};
 
     let s = util::encode_base64(signature_data);
-    // note s contains only ASCII now
+    // s contains only ASCII now
 
     let formatted_header_pre = &formatted_header[..insertion_index];
 
@@ -574,6 +574,23 @@ mod tests {
         format_tag_h(&mut out, &mut i, fmt, &value);
 
         assert_eq!(out, " h=Ribbit;");
+        assert_eq!(i, 10);
+    }
+
+    #[test]
+    fn format_tag_z_ok() {
+        let value = [
+            (FieldName::new("From").unwrap(), Box::from(*b" Me <x@gluet.ch>")),
+            (FieldName::new("To").unwrap(), Box::from(*b" \xe2\x99\xa5")),
+        ];
+
+        let mut out = String::new();
+        let mut i = 0;
+        let fmt = Fmt { width: 10, indent: " ", last: false, ascii: false };
+
+        format_tag_z(&mut out, &mut i, fmt, &value);
+
+        assert_eq!(out, " z=From:=2\r\n 0Me=20<x@\r\n gluet.ch>\r\n |To:=20♥;");
         assert_eq!(i, 10);
     }
 }

@@ -1,14 +1,20 @@
-use std::{future::Future, io, iter, pin::Pin, sync::Arc};
+use std::{
+    future::Future,
+    io::{self, ErrorKind},
+    iter,
+    pin::Pin,
+    sync::Arc,
+};
 use tokio::fs;
 use viadkim::{
     crypto::SigningKey,
     header::{HeaderField, HeaderFields},
-    signer::{SignRequest, SigningOutput, Signer, SigningError},
+    signer::{SignRequest, Signer, SigningError, SigningOutput},
     verifier::{Config, LookupTxt, VerificationResult, Verifier},
 };
 
-pub type LookupOutput = Vec<io::Result<Vec<u8>>>;
-pub type LookupFuture<'a> = Pin<Box<dyn Future<Output = io::Result<LookupOutput>> + Send + 'a>>;
+type LookupOutput = Vec<io::Result<Vec<u8>>>;
+type LookupFuture<'a> = Pin<Box<dyn Future<Output = io::Result<LookupOutput>> + Send + 'a>>;
 
 #[derive(Clone)]
 pub struct MockLookup(Arc<dyn Fn(&str) -> LookupFuture<'_> + Send + Sync>);
@@ -30,17 +36,19 @@ impl LookupTxt for MockLookup {
     }
 }
 
-// TODO test helpers
+pub async fn read_signing_key(file_name: &str) -> io::Result<SigningKey> {
+    let s = fs::read_to_string(file_name).await?;
+    let key = SigningKey::from_pkcs8_pem(&s).map_err(|e| io::Error::new(ErrorKind::Other, e))?;
+    Ok(key)
+}
+
+/// Returns the Base64-encoded content of a PEM-encoded public key file.
 pub async fn read_public_key_file_base64(file_name: &str) -> io::Result<String> {
+    // Assume well-formed PEM content, and strip just the first and last line.
     let s = fs::read_to_string(file_name).await?;
     let mut key_base64: Vec<_> = s.lines().skip(1).collect();
     key_base64.pop();
     Ok(key_base64.join(""))
-}
-
-pub async fn read_signing_key_from_file(file_name: &str) -> io::Result<SigningKey> {
-    let s = fs::read_to_string(file_name).await?;
-    Ok(SigningKey::from_pkcs8_pem(&s).unwrap())
 }
 
 pub async fn sign<I>(

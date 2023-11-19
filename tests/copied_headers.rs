@@ -34,7 +34,7 @@ async fn copied_headers_ok() {
 
     // First, sign the message properly
 
-    let signing_key = common::read_signing_key_from_file("tests/keys/rsa2048.pem").await.unwrap();
+    let signing_key = common::read_signing_key("tests/keys/rsa2048.pem").await.unwrap();
     let mut req = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("sel").unwrap(),

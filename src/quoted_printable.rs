@@ -83,6 +83,7 @@ fn encode_internal(mut bytes: &[u8], special_char: Option<char>, ascii_only: boo
     result
 }
 
+/// An error indicating that decoding of Quoted-Printable data failed.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct QuotedPrintableError;
 

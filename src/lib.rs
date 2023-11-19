@@ -51,7 +51,7 @@
 //! and enables the insecure, historic SHA-1 hash algorithm. In the API and
 //! implementation, wherever there is support for the SHA-256 hash algorithm,
 //! with this feature additional support for SHA-1 becomes available. This is a
-//! legacy compatibility feature, its use is strongly discouraged.
+//! legacy compatibility feature, its use is discouraged.
 //!
 //! # Trace logging
 //!

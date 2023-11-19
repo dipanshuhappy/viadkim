@@ -7,8 +7,6 @@ use viadkim::{
     signer::{SignRequest, Timestamp},
 };
 
-// TODO idea: sign msg with opendkim, compare or verify with viadkim?
-
 #[tokio::test]
 async fn basic_sign() {
     use CanonicalizationAlgorithm::*;
@@ -18,7 +16,7 @@ async fn basic_sign() {
     let headers = make_header_fields();
     let body = make_body();
 
-    let signing_key = common::read_signing_key_from_file("tests/keys/rsa2048.pem").await.unwrap();
+    let signing_key = common::read_signing_key("tests/keys/rsa2048.pem").await.unwrap();
     let mut request = SignRequest::new(
         DomainName::new("example.com").unwrap(),
         Selector::new("sel").unwrap(),

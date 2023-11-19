@@ -355,7 +355,8 @@ MCowBQYDK2VwAyEALlL9HXJq+OigwEEqTS7qzyneGP55gTq55NibbL8kSI4=
             "-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJGNv5VBw2H6MV5s8LYuQp8AfYZFCn26mre1YAH2Qbmd
 -----END PRIVATE KEY-----",
-        );
-        assert_eq!(key.unwrap().key_type(), KeyType::Ed25519);
+        )
+        .unwrap();
+        assert_eq!(key.key_type(), KeyType::Ed25519);
     }
 }

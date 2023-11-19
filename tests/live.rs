@@ -32,7 +32,7 @@ async fn live_verify() {
 }
 
 fn make_msg() -> String {
-r#"Received: from mail.apache.org (mailroute1-lw-us.apache.org [207.244.88.153])
+    r#"Received: from mail.apache.org (mailroute1-lw-us.apache.org [207.244.88.153])
 	(using TLSv1.3 with cipher TLS_AES_256_GCM_SHA384 (256/256 bits)
 	 key-exchange X25519 server-signature RSA-PSS (2048 bits) server-digest SHA256)
 	(No client certificate requested)

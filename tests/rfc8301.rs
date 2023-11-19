@@ -21,7 +21,7 @@ async fn key_512_basic() {
     let headers = make_header_fields();
     let body = make_body();
 
-    let signing_key = common::read_signing_key_from_file("tests/keys/rsa512.pem")
+    let signing_key = common::read_signing_key("tests/keys/rsa512.pem")
         .await
         .unwrap();
     let request = SignRequest::new(
@@ -83,7 +83,7 @@ async fn key_512_basic() {
     let headers = make_header_fields();
     let body = make_body();
 
-    let signing_key = common::read_signing_key_from_file("tests/keys/rsa512.pem")
+    let signing_key = common::read_signing_key("tests/keys/rsa512.pem")
         .await
         .unwrap();
     let request = SignRequest::new(
@@ -136,7 +136,7 @@ async fn sha1_basic() {
     let headers = make_header_fields();
     let body = make_body();
 
-    let signing_key = common::read_signing_key_from_file("tests/keys/rsa1024.pem")
+    let signing_key = common::read_signing_key("tests/keys/rsa1024.pem")
         .await
         .unwrap();
     let request = SignRequest::new(

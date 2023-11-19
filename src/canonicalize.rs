@@ -27,6 +27,100 @@ const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 const CRLF: [u8; 2] = [CR, LF];
 
+/// Produces the header canonicalization result for some header fields.
+pub fn canonicalize_headers(
+    algorithm: CanonicalizationAlgorithm,
+    headers: &HeaderFields,
+    selected_headers: &[FieldName],
+) -> Vec<u8> {
+    let mut result = vec![];
+    let mut processed_indexes = HashSet::with_capacity(selected_headers.len());
+
+    for selected_header in selected_headers {
+        for (i, (name, val)) in headers
+            .as_ref()
+            .iter()
+            .rev()
+            .enumerate()
+            .filter(|(i, _)| !processed_indexes.contains(i))
+        {
+            if name == selected_header {
+                canonicalize_header(&mut result, algorithm, name, val);
+
+                result.extend(CRLF);
+
+                processed_indexes.insert(i);
+
+                break;
+            }
+        }
+    }
+
+    result
+}
+
+/// Canonicalizes a header field into some result vector.
+///
+/// The given name and value must conform to the header field format as encoded
+/// by `FieldName` and `FieldBody`.
+pub fn canonicalize_header(
+    result: &mut Vec<u8>,
+    algorithm: CanonicalizationAlgorithm,
+    name: impl AsRef<str>,
+    value: impl AsRef<[u8]>,
+) {
+    let name = name.as_ref();
+    let value = value.as_ref();
+
+    match algorithm {
+        CanonicalizationAlgorithm::Simple => {
+            result.extend(name.bytes());
+            result.push(b':');
+            result.extend(value);
+        }
+        CanonicalizationAlgorithm::Relaxed => {
+            result.extend(name.to_ascii_lowercase().bytes());
+            result.push(b':');
+            canonicalize_header_relaxed(result, value);
+        }
+    }
+}
+
+fn canonicalize_header_relaxed(result: &mut Vec<u8>, value: &[u8]) {
+    fn is_space(b: u8) -> bool {
+        matches!(b, b' ' | b'\t' | b'\r' | b'\n')
+    }
+
+    fn trim_space(mut value: &[u8]) -> &[u8] {
+        while let Some((_, rest)) = value.split_first().filter(|(&b, _)| is_space(b)) {
+            value = rest;
+        }
+        while let Some((_, rest)) = value.split_last().filter(|(&b, _)| is_space(b)) {
+            value = rest;
+        }
+        value
+    }
+
+    debug_assert!(FieldBody::new(value).is_ok());
+
+    let value = trim_space(value);
+
+    let mut compressing = false;
+    for &b in value {
+        if is_space(b) {
+            if !compressing {
+                result.push(SP);
+                compressing = true;
+            }
+        } else {
+            result.push(b);
+            if compressing {
+                compressing = false;
+            }
+        }
+    }
+}
+
 // which state are we in = what did we see last?
 #[derive(Clone, Copy)]
 enum CanonState {
@@ -57,8 +151,8 @@ impl BodyCanonicalizer {
         }
     }
 
-    // canonicalisation recognises only CRLF as line separator/terminator, stray
-    // CR and LF are treated like other bytes
+    // Canonicalisation recognises only CRLF as line separator/terminator, stray
+    // CR and LF are treated like other bytes.
     pub fn canonicalize_chunk(&mut self, bytes: &[u8]) -> Vec<u8> {
         match self.kind {
             CanonicalizationAlgorithm::Simple => self.canon_chunk_simple(bytes),
@@ -213,7 +307,7 @@ impl BodyCanonicalizer {
                     CanonState::Init => CRLF.to_vec(),  // empty body is CRLF
                     CanonState::CrLf => vec![],
                     CanonState::Cr => {
-                        let mut result = vec![];  // final chunk to hash
+                        let mut result = vec![];
                         self.flush_empty_lines(&mut result);
                         result.push(CR);
                         result.extend(CRLF);  // body needs final CRLF
@@ -251,108 +345,14 @@ impl BodyCanonicalizer {
         }
     }
 
-    // write out remembered empty lines after encountering/before processing
-    // byte that ends a section of empty lines
+    // Write out remembered empty lines after encountering/before processing a
+    // byte that ends a section of empty lines.
     fn flush_empty_lines(&mut self, result: &mut Vec<u8>) {
         for _ in 0..self.empty_lines {
             result.extend(CRLF);
         }
         self.empty_lines = 0;
         self.blank_line = false;
-    }
-}
-
-/// Produces the header canonicalization result for some header fields.
-pub fn canonicalize_headers(
-    algorithm: CanonicalizationAlgorithm,
-    headers: &HeaderFields,
-    selected_headers: &[FieldName],
-) -> Vec<u8> {
-    let mut result = vec![];
-    let mut processed_indexes = HashSet::with_capacity(selected_headers.len());
-
-    for selected_header in selected_headers {
-        for (i, (name, val)) in headers
-            .as_ref()
-            .iter()
-            .rev()
-            .enumerate()
-            .filter(|(i, _)| !processed_indexes.contains(i))
-        {
-            if name == selected_header {
-                canonicalize_header(&mut result, algorithm, name, val);
-
-                result.extend(CRLF);
-
-                processed_indexes.insert(i);
-
-                break;
-            }
-        }
-    }
-
-    result
-}
-
-/// Canonicalizes a header field into some result vector.
-///
-/// The given name and value must conform to the header field format as encoded
-/// by `FieldName` and `FieldBody`.
-pub fn canonicalize_header(
-    result: &mut Vec<u8>,
-    algorithm: CanonicalizationAlgorithm,
-    name: impl AsRef<str>,
-    value: impl AsRef<[u8]>,
-) {
-    let name = name.as_ref();
-    let value = value.as_ref();
-
-    match algorithm {
-        CanonicalizationAlgorithm::Simple => {
-            result.extend(name.bytes());
-            result.push(b':');
-            result.extend(value);
-        }
-        CanonicalizationAlgorithm::Relaxed => {
-            result.extend(name.to_ascii_lowercase().bytes());
-            result.push(b':');
-            canonicalize_header_relaxed(result, value);
-        }
-    }
-}
-
-fn canonicalize_header_relaxed(canon_headers: &mut Vec<u8>, value: &[u8]) {
-    fn is_space(c: char) -> bool {
-        matches!(c, ' ' | '\t' | '\r' | '\n')
-    }
-
-    fn trim_space(mut value: &[u8]) -> &[u8] {
-        while let Some((_, rest)) = value.split_first().filter(|(&b, _)| is_space(b.into())) {
-            value = rest;
-        }
-        while let Some((_, rest)) = value.split_last().filter(|(&b, _)| is_space(b.into())) {
-            value = rest;
-        }
-        value
-    }
-
-    debug_assert!(FieldBody::new(value).is_ok());
-
-    let value = trim_space(value);
-
-    let mut compressing = false;
-    for &b in value {
-        if is_space(b.into()) {
-            if !compressing {
-                canon_headers.push(SP);
-                compressing = true;
-            }
-        } else {
-            canon_headers.push(b);
-            if compressing {
-                compressing = false;
-            }
-        }
     }
 }
 
@@ -412,10 +412,10 @@ mod tests {
 
         let body = canonicalize_chunks(
             bc,
-            &[b"well  hello \r\n", b"\r\n what agi \r\n\r\n", b"\r\n"],
+            &[b"well  hello \r\n", b"\r\n\r? what's up \r\n\r\n", b"\r\n"],
         );
 
-        assert_eq!(body, b"well  hello \r\n\r\n what agi \r\n");
+        assert_eq!(body, b"well  hello \r\n\r\n\r? what's up \r\n");
     }
 
     #[test]
@@ -424,10 +424,10 @@ mod tests {
 
         let body = canonicalize_chunks(
             bc,
-            &[b"well  hello \r\n", b"\r\n what agi \r\n\r\n", b"\r\n"],
+            &[b"well  hello \r\n", b"\r\n what's up \r\n\r\n", b"\r\n"],
         );
 
-        assert_eq!(body, b"well hello\r\n\r\n what agi\r\n");
+        assert_eq!(body, b"well hello\r\n\r\n what's up\r\n");
     }
 
     #[test]
@@ -441,12 +441,12 @@ mod tests {
                 b" hello ",
                 b"\r",
                 b"\n\r",
-                b"\n what agi \r\n\r\n",
+                b"\n what's up \r\n\r\n",
                 b"\r\n",
             ],
         );
 
-        assert_eq!(body, b"well hello\r\n\r\n what agi\r\n");
+        assert_eq!(body, b"well hello\r\n\r\n what's up\r\n");
     }
 
     #[test]

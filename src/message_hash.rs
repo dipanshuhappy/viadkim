@@ -20,7 +20,7 @@ use crate::{
     canonicalize::{self, BodyCanonicalizer},
     crypto::{self, CountingHasher, HashAlgorithm, HashStatus, InsufficientInput},
     header::{FieldName, HeaderFields},
-    signature::{CanonicalizationAlgorithm, DkimSignature, DKIM_SIGNATURE_NAME},
+    signature::{CanonicalizationAlgorithm, DkimSignature},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -28,6 +28,7 @@ use std::{
     fmt::{self, Display, Formatter},
 };
 
+/// Computes the *data hash* for the given inputs.
 pub fn compute_data_hash(
     hash_alg: HashAlgorithm,
     canon_alg: CanonicalizationAlgorithm,
@@ -36,8 +37,6 @@ pub fn compute_data_hash(
     dkim_sig_header_name: &str,
     formatted_dkim_sig_header_value: &str,
 ) -> Box<[u8]> {
-    debug_assert!(dkim_sig_header_name.eq_ignore_ascii_case(DKIM_SIGNATURE_NAME));
-
     // canonicalize selected headers
     let mut cheaders = canonicalize::canonicalize_headers(canon_alg, headers, selected_headers);
 
@@ -73,17 +72,19 @@ pub enum BodyHasherStance {
     Done,
 }
 
+/// A key referencing a body hash request in a `BodyHasher`.
 pub type BodyHasherKey = (Option<usize>, HashAlgorithm, CanonicalizationAlgorithm);
 
+/// Constructs a `BodyHasherKey` from DKIM signature data.
 pub fn body_hasher_key(sig: &DkimSignature) -> BodyHasherKey {
-    let body_len = sig
-        .body_length
+    let body_len = sig.body_length
         .map(|len| len.try_into().expect("unexpected integer overflow"));
     let hash_alg = sig.algorithm.hash_algorithm();
-    let canon_kind = sig.canonicalization.body;
-    (body_len, hash_alg, canon_kind)
+    let canon_alg = sig.canonicalization.body;
+    (body_len, hash_alg, canon_alg)
 }
 
+/// A builder for body hashers.
 #[derive(Clone)]
 pub struct BodyHasherBuilder {
     fail_on_truncate: bool,  // truncated inputs must yield InputTruncated
@@ -101,10 +102,10 @@ impl BodyHasherBuilder {
     pub fn register_canonicalization(
         &mut self,
         len: Option<usize>,
-        alg: HashAlgorithm,
+        hash: HashAlgorithm,
         canon: CanonicalizationAlgorithm,
     ) {
-        self.registrations.insert((len, alg, canon));
+        self.registrations.insert((len, hash, canon));
     }
 
     pub fn build(self) -> BodyHasher {
@@ -113,7 +114,7 @@ impl BodyHasherBuilder {
         let hashers = self
             .registrations
             .into_iter()
-            .map(|key @ (len, alg, _)| (key, (CountingHasher::new(alg, len), false)))
+            .map(|key @ (len, hash, _)| (key, (CountingHasher::new(hash, len), false)))
             .collect();
 
         BodyHasher {
@@ -219,6 +220,7 @@ impl BodyHasher {
     }
 }
 
+/// An error that occurs when computing the *body hash*.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum BodyHashError {
     InsufficientInput,
@@ -236,8 +238,10 @@ impl Display for BodyHashError {
 
 impl Error for BodyHashError {}
 
+/// A result produced after body hashing.
 pub type BodyHashResult = Result<(Box<[u8]>, usize), BodyHashError>;
 
+/// Results produced by a body hasher.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BodyHashResults {
     results: HashMap<BodyHasherKey, BodyHashResult>,
@@ -310,14 +314,14 @@ mod tests {
 
     #[test]
     fn body_hasher_hash_with_length() {
-        let key1 @ (len, hash_alg, canon_alg1) = limited_key_simple(27);
+        let key1 @ (len, hash_alg, canon_alg1) = limited_key_simple(28);
 
         let mut hasher = BodyHasherBuilder::new(false);
         hasher.register_canonicalization(len, hash_alg, canon_alg1);
         let mut hasher = hasher.build();
 
         assert_eq!(hasher.hash_chunk(b"well  hello \r\n"), BodyHasherStance::Interested);
-        assert_eq!(hasher.hash_chunk(b"\r\n what agi \r"), BodyHasherStance::Interested);
+        assert_eq!(hasher.hash_chunk(b"\r\n what's up \r"), BodyHasherStance::Interested);
         assert_eq!(hasher.hash_chunk(b"\n\r\n"), BodyHasherStance::Done);
 
         let results = hasher.finish();
@@ -325,7 +329,7 @@ mod tests {
         let res1 = results.get(&key1).unwrap();
         assert_eq!(
             res1.as_ref().unwrap().0,
-            sha256_digest(b"well  hello \r\n\r\n what agi \r")
+            sha256_digest(b"well  hello \r\n\r\n what's up \r")
         );
     }
 
@@ -359,6 +363,27 @@ David\r\n\
             util::encode_base64(&res1.as_ref().unwrap().0),
             "RMSbeRTj/zCxWeWQXpEIbiqxH0Jqg5eYs4ORzOt3MT0="
         );
+    }
+
+    #[cfg(feature = "pre-rfc8301")]
+    #[test]
+    fn body_hasher_reuse_canonicalized_chunk() {
+        let key1 @ (len, hash_alg1, canon_alg1) = key_relaxed();
+        let key2 @ (_, hash_alg2, canon_alg2) =
+            (None, HashAlgorithm::Sha1, CanonicalizationAlgorithm::Relaxed);
+
+        let mut hasher = BodyHasherBuilder::new(false);
+        hasher.register_canonicalization(len, hash_alg1, canon_alg1);
+        hasher.register_canonicalization(len, hash_alg2, canon_alg2);
+        let mut hasher = hasher.build();
+
+        assert_eq!(hasher.hash_chunk(b"abc \r\n"), BodyHasherStance::Interested);
+
+        let results = hasher.finish();
+
+        let res1 = results.get(&key1).unwrap();
+        let res2 = results.get(&key2).unwrap();
+        assert_eq!(res1.as_ref().unwrap().1, res2.as_ref().unwrap().1);
     }
 
     fn sha256_digest(msg: &[u8]) -> Box<[u8]> {
