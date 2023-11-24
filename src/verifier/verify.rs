@@ -27,7 +27,7 @@ use tracing::trace;
 
 pub fn perform_verification(
     headers: &HeaderFields,
-    public_key: &VerifyingKey,
+    verifying_key: &VerifyingKey,
     sig: &DkimSignature,
     name: &str,
     value: &str,
@@ -47,7 +47,7 @@ pub fn perform_verification(
 
     let signature_data = &sig.signature_data;
 
-    verify_signature(public_key, hash_alg, &data_hash, signature_data)
+    verify_signature(verifying_key, hash_alg, &data_hash, signature_data)
 }
 
 fn make_original_dkim_sig(value: &str) -> Cow<'_, str> {
@@ -87,12 +87,12 @@ fn make_original_dkim_sig(value: &str) -> Cow<'_, str> {
 }
 
 fn verify_signature(
-    public_key: &VerifyingKey,
+    key: &VerifyingKey,
     hash_alg: HashAlgorithm,
     data_hash: &[u8],
     signature_data: &[u8],
 ) -> Result<(), VerificationError> {
-    match public_key {
+    match key {
         VerifyingKey::Rsa(pk) => {
             match crypto::verify_rsa(pk, hash_alg, data_hash, signature_data) {
                 Ok(()) => {

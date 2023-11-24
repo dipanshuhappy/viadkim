@@ -4,9 +4,8 @@ use tokio::{
     io::{self, AsyncReadExt},
 };
 use viadkim::{
-    crypto::{HashAlgorithm, SigningKey},
-    signature::{DomainName, Selector, SigningAlgorithm},
-    signer::{SignRequest, Signer, SigningOutput},
+    crypto::HashAlgorithm, DomainName, Selector, SignRequest, Signer, SigningAlgorithm, SigningKey,
+    SigningOutput,
 };
 
 #[tokio::main]

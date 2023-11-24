@@ -127,7 +127,7 @@ pub struct Config {
     /// Tolerance applied to time values when checking signature expiration or
     /// timestamp validity, to allow for clock drift. Resolution is in seconds.
     ///
-    /// The default is 30 seconds.
+    /// The default is 5 minutes.
     pub time_tolerance: Duration,
 
     /// The `SystemTime` value to use as the instant ‘now’. If `None`, the value
@@ -159,7 +159,7 @@ impl Default for Config {
             forbid_unsigned_content: false,
             allow_expired: false,
             allow_timestamp_in_future: false,
-            time_tolerance: Duration::from_secs(30),
+            time_tolerance: Duration::from_secs(5 * 60),
             fixed_system_time: None,
         }
     }
@@ -675,9 +675,9 @@ impl Verifier {
     ///
     /// The returned result vector is never empty.
     pub fn finish(self) -> Vec<VerificationResult> {
-        let mut result = vec![];
-
         let body_hash_results = self.body_hasher.finish();
+
+        let mut result = vec![];
 
         for task in self.tasks {
             // To obtain the final VerificationStatus, those tasks that did
@@ -711,8 +711,7 @@ fn verify_body_hash(
 
     let key = body_hasher_key(sig);
 
-    let body_hash_result = body_hash_results
-        .get(&key)
+    let body_hash_result = body_hash_results.get(&key)
         .expect("requested body hash result not available");
 
     match body_hash_result {

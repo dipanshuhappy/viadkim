@@ -32,12 +32,12 @@ use std::{
 // Design note: According to RFC 6376, bare TLDs are not allowed (see ABNF for
 // d= tag). But elsewhere it does seem to assume possibility of such domains,
 // see §6.1.1: ‘signatures with "d=" values such as "com" and "co.uk" could be
-// ignored.’ (See also RFC 5321, section 2.3.5: ‘A domain name […] consists of
-// one or more components, separated by dots if more than one appears. In the
-// case of a top-level domain used by itself in an email address, a single
-// string is used without any dots.’)
+// ignored.’ Therefore, we allow such values. (See also RFC 5321, section 2.3.5:
+// ‘A domain name […] consists of one or more components, separated by dots if
+// more than one appears. In the case of a top-level domain used by itself in an
+// email address, a single string is used without any dots.’)
 
-// Note: some of this is copied from viaspf.
+// Note: some of this was copied from viaspf.
 
 /// An error indicating that a domain name could not be parsed.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -302,7 +302,7 @@ pub struct Identity {
     // Note: because PartialEq and Hash are derived, the local-part will be
     // compared/hashed literally and in case-sensitive fashion.
 
-    /// The identity’s optional local-part.
+    /// The identity’s local-part, if any.
     pub local_part: Option<Box<str>>,
 
     /// The identity’s domain part.

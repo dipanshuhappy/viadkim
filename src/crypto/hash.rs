@@ -18,6 +18,10 @@ use crate::crypto::HashAlgorithm;
 #[cfg(feature = "pre-rfc8301")]
 use sha1::Sha1;
 use sha2::Sha256;
+use std::{
+    error::Error,
+    fmt::{self, Display, Formatter},
+};
 
 /// Computes the hash of the given bytes.
 pub fn digest(alg: HashAlgorithm, bytes: impl AsRef<[u8]>) -> Box<[u8]> {
@@ -39,6 +43,14 @@ pub fn digest(alg: HashAlgorithm, bytes: impl AsRef<[u8]>) -> Box<[u8]> {
 /// An error indicating that a hasher expected more input than it was fed.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct InsufficientInput;
+
+impl Display for InsufficientInput {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "not enough input data")
+    }
+}
+
+impl Error for InsufficientInput {}
 
 /// Status returned by a hasher after digesting bytes.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

@@ -331,11 +331,7 @@ mod tests {
 
         let dkim_key_record = DkimKeyRecord::from_tag_list(&tags).unwrap();
 
-        let hash_algorithms = vec![
-            HashAlgorithm::Sha256,
-            #[cfg(feature = "pre-rfc8301")]
-            HashAlgorithm::Sha1,
-        ];
+        let hash_algorithms = HashAlgorithm::all();
 
         assert_eq!(
             dkim_key_record,

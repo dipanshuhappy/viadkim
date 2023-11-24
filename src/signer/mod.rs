@@ -552,28 +552,29 @@ where
                 return Err(RequestError::TooManyRequests);
             }
 
-            // eagerly validate requests and abort entire procedure if any are unusable
+            // Eagerly validate requests and abort entire procedure if any are
+            // unusable.
             validate_request(&request)?;
 
-            let body_length = request.body_length.to_usize().map_err(|_| RequestError::Overflow)?;
-
+            // Register a body hasher request for each signing request.
+            let body_len = request.body_length.to_usize().map_err(|_| RequestError::Overflow)?;
             let hash_alg = request.algorithm.hash_algorithm();
-            let canon_kind = request.canonicalization.body;
-            body_hasher.register_canonicalization(body_length, hash_alg, canon_kind);
+            let canon_alg = request.canonicalization.body;
+            body_hasher.register_canonicalization(body_len, hash_alg, canon_alg);
 
-            let task = SignerTask { request };
-
-            tasks.push(task);
+            tasks.push(SignerTask { request });
         }
 
         if tasks.is_empty() {
             return Err(RequestError::EmptyRequests);
         }
 
+        let body_hasher = body_hasher.build();
+
         Ok(Self {
             tasks,
             headers,
-            body_hasher: body_hasher.build(),
+            body_hasher,
         })
     }
 

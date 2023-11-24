@@ -111,9 +111,7 @@ impl BodyHasherBuilder {
     pub fn build(self) -> BodyHasher {
         use CanonicalizationAlgorithm::*;
 
-        let hashers = self
-            .registrations
-            .into_iter()
+        let hashers = self.registrations.into_iter()
             .map(|key @ (len, hash, _)| (key, (CountingHasher::new(hash, len), false)))
             .collect();
 
@@ -133,7 +131,7 @@ impl BodyHasherBuilder {
 pub struct BodyHasher {
     fail_on_truncate: bool,
     // For each registration/key, map to a hasher and a flag that records
-    // whether input was truncated, ie only partially consumed
+    // whether input was truncated, ie only partially consumed.
     hashers: HashMap<BodyHasherKey, (CountingHasher, bool)>,
     canonicalizer_simple: BodyCanonicalizer,
     canonicalizer_relaxed: BodyCanonicalizer,

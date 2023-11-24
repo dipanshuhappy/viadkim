@@ -45,33 +45,34 @@ pub enum VerifyStatus {
 
 #[derive(Debug, PartialEq)]
 pub struct VerifyTask {
+    header_name: Option<Box<str>>,
+    header_value: Option<Box<str>>,
+
     pub status: VerifyStatus,
     pub index: usize,
     pub signature: Option<DkimSignature>,
-    pub header_name: Option<Box<str>>,
-    pub header_value: Option<Box<str>>,
     pub key_record: Option<Arc<DkimKeyRecord>>,
 }
 
 impl VerifyTask {
     fn failed(index: usize, error: VerificationError) -> Self {
         Self {
+            header_name: None,
+            header_value: None,
             status: VerifyStatus::Failed(error),
             index,
             signature: None,
-            header_name: None,
-            header_value: None,
             key_record: None,
         }
     }
 
     fn started(index: usize, sig: DkimSignature, name: Box<str>, value: Box<str>) -> Self {
         Self {
+            header_name: Some(name),
+            header_value: Some(value),
             status: VerifyStatus::InProgress,
             index,
             signature: Some(sig),
-            header_name: Some(name),
-            header_value: Some(value),
             key_record: None,
         }
     }
@@ -435,7 +436,7 @@ fn validate_key_record(
 
     if record.flags.contains(&SelectorFlag::NoSubdomains) {
         if let Some(identity) = identity {
-            // Parsing of the key record already ensures that *i=* domain is
+            // Parsing of the DKIM signature already ensures that *i=* domain is
             // subdomain of *d=*, can now compare normalised (lowercase) A-label
             // form directly.
             if domain.to_ascii() != identity.domain.to_ascii() {

@@ -1,7 +1,7 @@
 use hickory_resolver::TokioAsyncResolver;
 use std::{env, process};
 use tokio::io::{self, AsyncReadExt};
-use viadkim::verifier::{Config, Verifier};
+use viadkim::{Config, Verifier};
 
 #[tokio::main]
 async fn main() {
