@@ -56,8 +56,8 @@ See the [API documentation] for usage instructions.
 The minimum supported Rust version is 1.67.0.
 
 [Rust]: https://www.rust-lang.org
-[`Signer`]: https://docs.rs/viadkim/0.0.7/viadkim/signer/struct.Signer.html
-[`Verifier`]: https://docs.rs/viadkim/0.0.7/viadkim/verifier/struct.Verifier.html
+[`Signer`]: https://docs.rs/viadkim/0.1.0/viadkim/signer/struct.Signer.html
+[`Verifier`]: https://docs.rs/viadkim/0.1.0/viadkim/verifier/struct.Verifier.html
 [API documentation]: https://docs.rs/viadkim
 
 ## Examples
