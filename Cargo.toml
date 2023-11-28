@@ -20,11 +20,11 @@ pkcs8 = { version = "0.10.2", features = ["pem"] }
 rsa = "0.9.3"
 sha1 = { version = "0.10.6", features = ["oid"], optional = true }
 sha2 = { version = "0.10.8", features = ["oid"] }
-tokio = { version = "1.33.0", features = ["fs", "macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.33.0", features = ["rt", "time"] }
 tracing = "0.1.40"
 
 [dev-dependencies]
-tokio = { version = "1.33.0", features = ["io-std", "io-util", "test-util"] }
+tokio = { version = "1.33.0", features = ["fs", "io-std", "io-util", "macros", "rt-multi-thread", "test-util"] }
 tracing-subscriber = "0.3.17"
 
 [features]

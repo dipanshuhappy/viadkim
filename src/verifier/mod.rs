@@ -204,8 +204,8 @@ impl VerificationStatus {
         use VerificationError::*;
 
         match self {
-            VerificationStatus::Success => DkimResult::Pass,
-            VerificationStatus::Failure(error) => match error {
+            Self::Success => DkimResult::Pass,
+            Self::Failure(error) => match error {
                 DkimSignatureFormat(error) => match error.kind {
                     DkimSignatureErrorKind::Utf8Encoding
                     | DkimSignatureErrorKind::TagListFormat
