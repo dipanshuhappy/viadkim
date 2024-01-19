@@ -145,13 +145,18 @@ impl<'a, 'b> HeaderVerifier<'a, 'b> {
         T: LookupTxt + Clone + 'static,
     {
         // First, spawn off the DNS queries for the still in-progress tasks.
-        let mut queries = Queries::spawn(&self.tasks, resolver, self.config);
-
+        let mut queries = Queries::spawn(&self.tasks, resolver, self.config).await;
+        
         // Then, step through the query results *as they come in*, and perform
         // verification for each signature that has the corresponding
         // (domain, selector) pair.
-        while let Some(result) = queries.set.join_next().await {
-            let (indexes, result) = result.expect("could not await query task");
+
+        for  raw_result in queries.set.into_iter() {
+            
+            let (indexes, result) = raw_result;
+
+
+            
 
             let mut records = map_lookup_result_to_key_records(result);
 

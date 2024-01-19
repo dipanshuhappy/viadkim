@@ -31,7 +31,7 @@ impl LookupTxt for MockLookup {
 
     fn lookup_txt(&self, domain: &str) -> Self::Query<'_> {
         let domain = domain.to_owned();
-
+       
         Box::pin(async move { self.0(&domain).await })
     }
 }
@@ -78,7 +78,7 @@ where
     let mut verifier = Verifier::verify_header(resolver, headers, config)
         .await
         .unwrap();
-
+ 
     let _ = verifier.process_body_chunk(body);
 
     verifier.finish()
